@@ -1,0 +1,19 @@
+# Local state — never commit (library contents + the only recovery store)
+colophon.db
+reports/
+
+# Secrets / local config
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.ruff_cache/
+
+# Tooling
+.flox/
