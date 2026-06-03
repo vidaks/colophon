@@ -4,13 +4,23 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build — must equal the pyproject version (e.g. v0.2.0). Created at the current commit if it doesn't exist."
+        required: true
+        type: string
 
 permissions:
-  contents: write  # create the GitHub Release
+  contents: write  # create the GitHub Release (and, on manual dispatch, the tag)
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # A tag push supplies the ref via github.ref_name; a manual run supplies it
+      # as an input. Everything downstream reads $REF so both paths are identical.
+      REF: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,7 +29,7 @@ jobs:
 
       - name: Verify the tag matches the package version
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${REF#v}"
           ver="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
           echo "tag=$tag  pyproject=$ver"
           [ "$tag" = "$ver" ] || { echo "::error::tag v$tag does not match pyproject version $ver"; exit 1; }
@@ -31,21 +41,25 @@ jobs:
 
       - name: Extract release notes from CHANGELOG
         run: |
-          ver="${GITHUB_REF_NAME#v}"
+          ver="${REF#v}"
           awk -v v="$ver" '
             $0 ~ ("^## \\[" v "\\]") {f=1; next}
             f && (/^## / || /^\[[^]]+\]: /) {exit}
             f {print}
           ' CHANGELOG.md > release-notes.md
-          [ -s release-notes.md ] || echo "Release ${GITHUB_REF_NAME}" > release-notes.md
+          [ -s release-notes.md ] || echo "Release ${REF}" > release-notes.md
 
       - name: Create GitHub Release with artifacts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "$GITHUB_REF_NAME" \
-            --notes-file release-notes.md
+          # On a manual dispatch the tag may not exist yet — pin it to the built
+          # commit so the release tags exactly what was built, not branch HEAD later.
+          target=""
+          [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && target="--target $GITHUB_SHA"
+          gh release create "$REF" dist/* \
+            --title "$REF" \
+            --notes-file release-notes.md $target
 
   # --- Optional: publish to PyPI via Trusted Publishing (OIDC, no API token) ---
   # Set up a PyPI trusted publisher for project "colophon"
