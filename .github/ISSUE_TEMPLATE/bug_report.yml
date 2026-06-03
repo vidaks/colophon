@@ -1,0 +1,42 @@
+name: Bug report
+description: Something went wrong while running Colophon.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not paste API keys, tokens, or full library dumps.**
+        For security issues, use a private advisory instead (see the link above).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command + output
+      description: The exact subcommand and its output (prefer dry-run, i.e. without `--apply`).
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: Server
+      description: Booklore-family server + version (e.g. grimmory/Edda image tag).
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12"
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
