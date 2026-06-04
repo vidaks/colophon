@@ -32,6 +32,28 @@ class Store:
                 )"""
             )
             c.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
+            # Mis-seeds the resolver could not place (no match, or a match below the
+            # auto-apply threshold). Keyed by book; `fingerprint` is the normalized
+            # title+author the resolve query was built from — if the book's title or
+            # author later changes, the fingerprint no longer matches and the book is
+            # re-queried. This is what stops the nightly sweep re-asking Hardcover +
+            # Haiku about the same unresolvable books every run.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS resolve_skip(
+                    book_id INTEGER PRIMARY KEY,
+                    title TEXT,
+                    fingerprint TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    reason TEXT,
+                    conf REAL,
+                    chosen_id TEXT,
+                    chosen_title TEXT,
+                    isbn TEXT,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 1
+                )"""
+            )
 
     def epoch(self):
         """Re-audit epoch. Settled (locked) books are only re-opened when this is
@@ -76,6 +98,37 @@ class Store:
         with self._conn() as c:
             return [dict(r) for r in c.execute(
                 "SELECT * FROM changes ORDER BY id DESC LIMIT ?", (int(n),))]
+
+    # --- resolve skip-list (don't re-query the unresolvable) ---
+
+    def skip_map(self):
+        """All skip entries as {book_id: row-dict}."""
+        with self._conn() as c:
+            return {r["book_id"]: dict(r) for r in c.execute("SELECT * FROM resolve_skip")}
+
+    def skip_put(self, book_id, title, fingerprint, action, reason=None, conf=None,
+                 chosen_id=None, chosen_title=None, isbn=None):
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO resolve_skip(book_id,title,fingerprint,action,reason,conf,"
+                "chosen_id,chosen_title,isbn,first_seen,last_seen,attempts) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,1) "
+                "ON CONFLICT(book_id) DO UPDATE SET title=excluded.title, "
+                "fingerprint=excluded.fingerprint, action=excluded.action, "
+                "reason=excluded.reason, conf=excluded.conf, chosen_id=excluded.chosen_id, "
+                "chosen_title=excluded.chosen_title, isbn=excluded.isbn, "
+                "last_seen=excluded.last_seen, attempts=resolve_skip.attempts+1",
+                (int(book_id), title, fingerprint, action, reason, conf, chosen_id,
+                 chosen_title, isbn, now, now),
+            )
+
+    def skip_clear(self, book_id=None):
+        """Drop one skip entry (book_id given) or all of them. Returns rows removed."""
+        with self._conn() as c:
+            if book_id is None:
+                return c.execute("DELETE FROM resolve_skip").rowcount
+            return c.execute("DELETE FROM resolve_skip WHERE book_id=?", (int(book_id),)).rowcount
 
     @staticmethod
     def loads(row, field):

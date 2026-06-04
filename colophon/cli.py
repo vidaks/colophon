@@ -140,11 +140,15 @@ def cmd_audit(args, g, store):
 def cmd_resolve(args, g, store):
     from . import anthropic
     from .resolver import render, run_resolve
+    if args.clear_skips:
+        n = store.skip_clear()
+        print(f"cleared {n} cached-unresolvable entr{'y' if n == 1 else 'ies'}")
+        return 0
     if not anthropic.have_key():
         print("(no ANTHROPIC_API_KEY — using the `claude` CLI; production needs the vaulted key)")
     try:
-        res = run_resolve(limit=args.limit, book_ids=args.book or None,
-                          apply=args.apply, min_conf=args.min_conf, g=g, store=store)
+        res = run_resolve(limit=args.limit, book_ids=args.book or None, apply=args.apply,
+                          min_conf=args.min_conf, g=g, store=store, force=args.force)
     except PreconditionError as e:
         print(e)
         return 2
@@ -194,6 +198,35 @@ def cmd_oversight(args, g, store):
     return 0
 
 
+def cmd_maintain(args, g, store):
+    """Run the nightly sweep (backfill + resolve) and report. With --email, always
+    send the summary (a daily heartbeat) — even on an aborted run. Exits non-zero
+    when a phase failed so the systemd unit fails + the next timer fire retries; an
+    SMTP failure does NOT change the exit code (the heal work still happened)."""
+    from . import maintain as M
+    res = body = None
+    try:
+        res = M.run_maintain(g, store, limit=args.limit, min_conf=args.min_conf,
+                             apply=args.apply, force=args.force)
+        body = M.render_summary(res)
+        reports_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "reports"))
+        os.makedirs(reports_dir, exist_ok=True)
+        path = os.path.join(reports_dir, f"maintain-{time.strftime('%Y%m%dT%H%M%S')}.md")
+        with open(path, "w") as f:
+            f.write(body)
+        print(body)
+        print(f"(report written to {path})")
+    finally:
+        if args.email:
+            from . import oversight
+            subject = M.subject(res) if res else "Colophon daily [CRASH] — see host journal"
+            mail = body or ("Colophon maintain crashed before producing a summary.\n"
+                            "Check `journalctl -u colophon.service` on the host.\n")
+            ok, detail = oversight.send_email(subject, mail)
+            print(f"email: {detail}")
+    return 0 if (res and res["ok"]) else 1
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="colophon", description="autonomous library metadata healer (Phase 0)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -219,19 +252,27 @@ def main(argv=None):
     rs.add_argument("--limit", type=int, default=None)
     rs.add_argument("--apply", action="store_true", help="auto-apply re-seeds at conf >= --min-conf")
     rs.add_argument("--min-conf", type=float, default=0.9)
+    rs.add_argument("--force", action="store_true", help="re-query books on the cached-unresolvable skip-list")
+    rs.add_argument("--clear-skips", action="store_true", help="forget all cached-unresolvable entries, then exit")
     sn = sub.add_parser("series-audit", help="Phase 3 — series-numbering audit (read-only unless --apply)")
     sn.add_argument("--limit", type=int, default=None)
     sn.add_argument("--apply", action="store_true", help="heal clean number mismatches (reuses the heal path)")
     ov = sub.add_parser("oversight", help="Phase 4b — weekly changelog oversight + verdict (emails only if flagged)")
     ov.add_argument("--days", type=int, default=7)
     ov.add_argument("--email", action="store_true", help="email the digest only when flagged (DRIFT/REVIEW)")
+    mt = sub.add_parser("maintain", help="nightly sweep: backfill + resolve in one run, with a summary (dry-run unless --apply)")
+    mt.add_argument("--limit", type=int, default=20, help="max books for the backfill survey")
+    mt.add_argument("--min-conf", type=float, default=0.9, help="auto-apply gate for resolve re-seeds")
+    mt.add_argument("--apply", action="store_true", help="actually write (default: dry-run)")
+    mt.add_argument("--force", action="store_true", help="re-query cached-unresolvable mis-seeds this run")
+    mt.add_argument("--email", action="store_true", help="always email the summary (a daily heartbeat)")
     args = p.parse_args(argv)
 
     g, store = Grimmory(), Store()
     fn = {"precheck": cmd_precheck, "heal": cmd_heal, "log": cmd_log,
           "revert": cmd_revert, "backfill": cmd_backfill, "audit": cmd_audit,
           "resolve": cmd_resolve, "series-audit": cmd_series_audit,
-          "oversight": cmd_oversight}[args.cmd]
+          "oversight": cmd_oversight, "maintain": cmd_maintain}[args.cmd]
     try:
         return fn(args, g, store)
     except (GrimmoryError, PreconditionError) as e:

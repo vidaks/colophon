@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-04
+
+### Added
+- **`maintain` command** — runs backfill + resolve in a single process (each phase
+  guarded so one failing doesn't skip the other), writes a one-page summary, and with
+  `--email` always sends it as a daily heartbeat — including on an aborted run. Exits
+  non-zero on a phase failure (so a supervising timer is marked failed and retries); an
+  SMTP failure does not change the exit code.
+- **Resolve skip-list** — mis-seeds that resolve to no-match or a below-threshold match
+  are remembered (`resolve_skip` table) and not re-queried on later runs, cutting the
+  repeated Hardcover + LLM calls for permanently-unresolvable books. The skip key is the
+  normalized title+author, so a book is re-queried automatically once its metadata
+  changes. `resolve --force` re-checks everything; `resolve --clear-skips` forgets the
+  list; `COLOPHON_RESOLVE_RETRY_DAYS` (default `0` = never) sets an optional re-check TTL.
+
+### Changed
+- `resolve` reports now show the cached-unresolvable set, surfacing standing
+  below-threshold matches with a one-line manual-apply command.
+
 ## [0.1.0] — 2026-06-03
 
 Initial public release.
@@ -26,5 +45,6 @@ Initial public release.
   per-run limits, and a circuit-breaker.
 - Standard-library-only; configurable entirely via environment variables.
 
-[Unreleased]: https://github.com/vidaks/colophon/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/vidaks/colophon/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/vidaks/colophon/releases/tag/v0.2.0
 [0.1.0]: https://github.com/vidaks/colophon/releases/tag/v0.1.0
