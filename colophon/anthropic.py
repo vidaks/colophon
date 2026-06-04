@@ -9,6 +9,8 @@ chosen id against the candidate set (no hallucinated ids).
 import json
 import os
 import subprocess
+import time
+import urllib.error
 import urllib.request
 
 MODEL = "claude-haiku-4-5-20251001"
@@ -37,11 +39,21 @@ def _via_api(system, user, schema, key):
         API, data=json.dumps(body).encode(),
         headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
     )
-    resp = json.load(urllib.request.urlopen(req, timeout=120))
-    for block in resp.get("content", []):
-        if block.get("type") == "tool_use":
-            return block["input"]
-    raise RuntimeError("no tool_use block in Haiku response")
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as response:
+                resp = json.load(response)
+            for block in resp.get("content", []):
+                if block.get("type") == "tool_use":
+                    return block["input"]
+            raise RuntimeError("no tool_use block in Haiku response")
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 4:
+                retry_after = e.headers.get("Retry-After")
+                sleep_time = int(retry_after) if (retry_after and retry_after.isdigit()) else (2 ** attempt * 2)
+                time.sleep(sleep_time)
+                continue
+            raise
 
 
 def _via_cli(system, user, schema):

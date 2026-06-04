@@ -90,7 +90,9 @@ def run_resolve(limit=None, book_ids=None, apply=False, min_conf=AUTO_CONF, g=No
         books = [b for b, _ in audit.run_audit(limit=limit)["categories"].get("review-misseed", [])]
     run_id = (store.new_run_id() + "-resolve") if (apply and store) else None
     proposals, errors = [], 0
-    for b in books:
+    for i, b in enumerate(books):
+        if i > 0:
+            time.sleep(1.0)
         p = resolve(b)
         if (apply and p["action"] == "propose"
                 and (p.get("confidence") or 0) >= min_conf and p.get("isbn")):
