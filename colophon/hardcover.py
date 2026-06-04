@@ -9,6 +9,8 @@ return the JSON response (useful when the key lives in a secrets manager). A lea
 import json
 import os
 import subprocess
+import time
+import urllib.error
 import urllib.request
 
 # Optional command that takes a GraphQL query on stdin and returns the JSON response,
@@ -31,23 +33,33 @@ def _api_key():
 
 def query(graphql):
     key = _api_key()
-    if key:
-        req = urllib.request.Request(
-            HC_ENDPOINT, data=json.dumps({"query": graphql}).encode(),
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        )
-        data = json.load(urllib.request.urlopen(req, timeout=60))
-    elif QUERY_SH:  # delegate so the key never enters this process
-        r = subprocess.run([QUERY_SH], input=graphql, capture_output=True, text=True, timeout=60)
-        if r.returncode != 0:
-            raise HardcoverError(f"query command failed: {r.stderr.strip()[:200]}")
-        data = json.loads(r.stdout)
-    else:
-        raise HardcoverError("no Hardcover credentials — set COLOPHON_HARDCOVER_KEY "
-                             "(or COLOPHON_HARDCOVER_QUERY_CMD)")
-    if data.get("errors"):
-        raise HardcoverError(f"hardcover errors: {data['errors']}")
-    return data.get("data") or {}
+    for attempt in range(5):
+        try:
+            if key:
+                req = urllib.request.Request(
+                    HC_ENDPOINT, data=json.dumps({"query": graphql}).encode(),
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=60) as response:
+                    data = json.load(response)
+            elif QUERY_SH:  # delegate so the key never enters this process
+                r = subprocess.run([QUERY_SH], input=graphql, capture_output=True, text=True, timeout=60)
+                if r.returncode != 0:
+                    raise HardcoverError(f"query command failed: {r.stderr.strip()[:200]}")
+                data = json.loads(r.stdout)
+            else:
+                raise HardcoverError("no Hardcover credentials — set COLOPHON_HARDCOVER_KEY "
+                                     "(or COLOPHON_HARDCOVER_QUERY_CMD)")
+            if data.get("errors"):
+                raise HardcoverError(f"hardcover errors: {data['errors']}")
+            return data.get("data") or {}
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 4:
+                retry_after = e.headers.get("Retry-After")
+                sleep_time = int(retry_after) if (retry_after and retry_after.isdigit()) else (2 ** attempt * 2)
+                time.sleep(sleep_time)
+                continue
+            raise
 
 
 def book_by_id(hcid):
