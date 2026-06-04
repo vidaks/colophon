@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **EPUB inspection for low-confidence mis-seeds** — when `resolve` lands below the
+  confidence gate (or finds no match), it now inspects the book's own EPUB and
+  re-adjudicates with two extra signals: the OPF `dc:identifier` ISBN (a real ISBN that
+  resolves to a same-author Hardcover book heals deterministically, no LLM —
+  `source=epub-opf`), and the colophon / copyright page text folded into the Haiku prompt
+  (`source=epub-colophon`). Only below-threshold books pay for the file I/O. Gated on the
+  new `COLOPHON_BOOKS_ROOT` (the host path the library mounts from); unset ⇒ feature off.
+  New module `colophon/epub.py` (stdlib-only) plus `hardcover.book_by_isbn` and
+  `grimmory.epub_path` helpers.
+
 ## [0.2.0] — 2026-06-04
 
 ### Added

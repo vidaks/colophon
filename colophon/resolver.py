@@ -9,7 +9,7 @@ import json
 import os
 import time
 
-from . import anthropic, audit, hardcover, matcher
+from . import anthropic, audit, epub, grimmory, hardcover, matcher
 from .heal import assert_preconditions, heal_book
 
 AUTO_CONF = 0.9          # auto-apply re-seeds at or above this confidence
@@ -68,6 +68,8 @@ SYSTEM = (
     "Rules: a candidate with compilation=true is an omnibus/collection — pick it "
     "ONLY if the book itself is that collection, never for a single title; the "
     "author must match; if no candidate is clearly the same work, return NONE. "
+    "The book's own colophon / copyright page may be included — use its printed ISBN, "
+    "publisher and edition as strong evidence, but chosen_id must still be a candidate id. "
     "Never invent an id — chosen_id must be one of the given ids or \"NONE\". Be "
     "conservative: NONE is better than a wrong fix."
 )
@@ -84,9 +86,53 @@ SCHEMA = {
 }
 
 
-def resolve(book):
-    """book: {book_id, title, authors, hcid, ...}. Returns a proposal dict."""
+def _resolve_by_isbn(bid, title, authors, isbns):
+    """Deterministic: an OPF ISBN that resolves to a same-author Hardcover book needs
+    no LLM. Heals to the exact edition (the ISBN-13 from the file) when valid, else the
+    book's canonical ISBN. Returns a propose dict (source=epub-opf) or None."""
+    for isbn in isbns:
+        try:
+            cand = hardcover.book_by_isbn(isbn)
+        except Exception:
+            continue
+        if not cand:
+            continue
+        if authors and not matcher._title_match(authors, ", ".join(cand.get("authors") or [])):
+            continue
+        isbn13 = isbn if (len(isbn) == 13 and isbn.isdigit()) else cand.get("isbn")
+        if not isbn13:
+            continue
+        return {"book_id": bid, "title": title, "action": "propose", "source": "epub-opf",
+                "chosen_id": str(cand["hcid"]), "chosen_title": cand.get("title"),
+                "isbn": isbn13, "slug": cand.get("slug"), "confidence": 0.97,
+                "is_set": None, "reason": f"OPF ISBN {isbn} → {cand.get('title')!r}"}
+    return None
+
+
+def _epub_signals(book_id):
+    """Read-only: the book's local EPUB → epub.inspect() dict, or None. Never raises;
+    None when there is no books root, no EPUB, or no usable signal in the file."""
+    try:
+        path = grimmory.epub_path(book_id)
+        if not path or not os.path.exists(path):
+            return None
+        sig = epub.inspect(path)
+        return sig if (sig and (sig.get("opf_isbns") or sig.get("colophon_text"))) else None
+    except Exception:
+        return None
+
+
+def resolve(book, file_signals=None):
+    """book: {book_id, title, authors, hcid, ...}. Returns a proposal dict.
+
+    With file_signals (from epub.inspect): a real OPF ISBN that resolves to a
+    same-author Hardcover book short-circuits the LLM (source=epub-opf); otherwise the
+    colophon text is folded into the adjudication prompt as extra evidence."""
     bid, title, authors = book["book_id"], book["title"], book.get("authors", "")
+    if file_signals:
+        sc = _resolve_by_isbn(bid, title, authors, file_signals.get("opf_isbns") or [])
+        if sc:
+            return sc
     cands = hardcover.search(f"{title} {authors}".strip(), per_page=8)
     catalog = [{
         "id": str(c["hcid"]), "title": c["title"], "subtitle": c.get("subtitle"),
@@ -97,7 +143,9 @@ def resolve(book):
     if not catalog:
         return {"book_id": bid, "title": title, "action": "none", "reason": "no search candidates"}
     valid_ids = {c["id"] for c in catalog}
+    colophon = (file_signals or {}).get("colophon_text") or ""
     user = ("BOOK TO IDENTIFY:\n" + json.dumps({"title": title, "authors": authors}) +
+            ("\n\nBOOK'S OWN COLOPHON / COPYRIGHT PAGE:\n" + colophon if colophon else "") +
             "\n\nCANDIDATES:\n" + json.dumps(catalog, ensure_ascii=False) +
             "\n\nReturn the correct candidate id, or NONE.")
     try:
@@ -119,6 +167,7 @@ def resolve(book):
         "chosen_title": (detail or {}).get("title") or next(c["title"] for c in catalog if c["id"] == chosen),
         "isbn": (detail or {}).get("isbn"), "slug": (detail or {}).get("slug"),
         "confidence": conf, "is_set": d.get("is_set"), "reason": reason,
+        "source": "epub-colophon" if colophon else None,
     }
 
 
@@ -154,6 +203,14 @@ def run_resolve(limit=None, book_ids=None, apply=False, min_conf=AUTO_CONF, g=No
         if i > 0:
             time.sleep(1.0)
         p = resolve(b)
+        # Below the gate (or no match)? Inspect the actual EPUB and re-adjudicate with
+        # its OPF ISBN + colophon as extra signal — the only books that pay for file I/O.
+        if not p.get("source") and (p["action"] == "none" or (p.get("confidence") or 0) < min_conf):
+            sig = _epub_signals(b["book_id"])
+            if sig:
+                p2 = resolve(b, file_signals=sig)
+                if (p2.get("confidence") or 0) > (p.get("confidence") or 0):
+                    p = p2
         if (apply and p["action"] == "propose"
                 and (p.get("confidence") or 0) >= min_conf and p.get("isbn")):
             try:
@@ -187,7 +244,8 @@ def render(result):
          "## Re-seeds\n"]
     for p in sorted(proposed, key=lambda p: -(p.get("confidence") or 0)):
         tag = "✓ APPLIED" if p.get("applied") else ("apply-FAILED" if p.get("apply_error") else "proposed")
-        L.append(f"- `{p['book_id']}` {p['title']!r}  [{tag}]")
+        via = f"  _via {p['source']}_" if p.get("source") else ""
+        L.append(f"- `{p['book_id']}` {p['title']!r}  [{tag}]{via}")
         L.append(f"    → **{p['chosen_title']!r}**  (hcid {p['chosen_id']}, isbn {p.get('isbn')}, "
                  f"conf {p.get('confidence')}{', SET' if p.get('is_set') else ''})")
         if p.get("apply_error"):

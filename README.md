@@ -82,6 +82,7 @@ Copy `.env.example` to `.env` and fill it in (or export the variables):
 | `ANTHROPIC_API_KEY` | LLM adjudication (omit to use the `claude` CLI) |
 | `COLOPHON_DB`, `COLOPHON_REPORTS` | where to write the changelog + reports |
 | `COLOPHON_RESOLVE_RETRY_DAYS` | re-query a cached-unresolvable mis-seed after N days (default `0` = never) |
+| `COLOPHON_BOOKS_ROOT` | host path of the library root; set it to let `resolve` inspect a below-threshold book's own EPUB (OPF ISBN + colophon). Unset ⇒ feature off |
 | `SMTP_*`, `OVERSIGHT_TO` | oversight + `maintain --email` summaries |
 
 ## Usage
