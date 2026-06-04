@@ -81,7 +81,8 @@ Copy `.env.example` to `.env` and fill it in (or export the variables):
 | `COLOPHON_HARDCOVER_KEY` | Hardcover API key (or `COLOPHON_HARDCOVER_QUERY_CMD`) |
 | `ANTHROPIC_API_KEY` | LLM adjudication (omit to use the `claude` CLI) |
 | `COLOPHON_DB`, `COLOPHON_REPORTS` | where to write the changelog + reports |
-| `SMTP_*`, `OVERSIGHT_TO` | weekly oversight email (only sent when flagged) |
+| `COLOPHON_RESOLVE_RETRY_DAYS` | re-query a cached-unresolvable mis-seed after N days (default `0` = never) |
+| `SMTP_*`, `OVERSIGHT_TO` | oversight + `maintain --email` summaries |
 
 ## Usage
 
@@ -90,7 +91,9 @@ python -m colophon.cli precheck                 # assert the files-never-touched
 python -m colophon.cli backfill                 # survey + propose (dry-run)
 python -m colophon.cli backfill --apply         # heal broken ISBNs
 python -m colophon.cli resolve --apply          # LLM-resolve mis-identified books (>= 0.9 conf)
+python -m colophon.cli resolve --force          # re-query the cached-unresolvable mis-seeds
 python -m colophon.cli series-audit             # series-number report (read-only)
+python -m colophon.cli maintain --apply --email # backfill + resolve in one run + summary email
 python -m colophon.cli oversight --days 7       # weekly changelog review + verdict
 python -m colophon.cli log                      # the change history
 python -m colophon.cli revert <run_id> --apply  # undo a metadata run

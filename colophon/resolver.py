@@ -6,13 +6,58 @@ identity or NONE. Validates the chosen id against the candidate set (no invented
 ids). Proposes; writes nothing. Auto-apply is a later, agreement-gated stage.
 """
 import json
+import os
 import time
 
-from . import anthropic, audit, hardcover
+from . import anthropic, audit, hardcover, matcher
 from .heal import assert_preconditions, heal_book
 
 AUTO_CONF = 0.9          # auto-apply re-seeds at or above this confidence
 ABORT_ERRORS = 3         # circuit-breaker
+# Days after which a cached-unresolvable book is re-queried anyway. 0 = never
+# (the default): once placed on the skip-list a book is only re-tried when its
+# title/author changes (fingerprint miss) or on an explicit `resolve --force`.
+RETRY_DAYS = int(os.environ.get("COLOPHON_RESOLVE_RETRY_DAYS", "0") or "0")
+
+
+def _fingerprint(book):
+    """The normalized title+author the resolve query is built from. Stable across
+    processes (plain text, not the per-process-salted builtin hash())."""
+    return matcher._norm(book.get("title", "")) + " :: " + matcher._norm(book.get("authors", ""))
+
+
+def _expired(last_seen, days=RETRY_DAYS):
+    if days <= 0:
+        return False
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - days * 86400))
+    return (last_seen or "") < cutoff
+
+
+def _cached_skip(book, skips, days=RETRY_DAYS):
+    """Return the live skip row for this book, or None if it should be re-queried
+    (no entry / title-or-author changed / entry expired)."""
+    row = skips.get(book["book_id"])
+    if row and row["fingerprint"] == _fingerprint(book) and not _expired(row["last_seen"], days):
+        return row
+    return None
+
+
+def _record_skip(store, book, p):
+    """After an apply-mode resolve, keep the skip-list current for this book."""
+    if p.get("applied"):
+        store.skip_clear(book["book_id"])          # resolved — no longer unresolvable
+        return
+    if p.get("apply_error") or p["action"] == "error":
+        return                                      # transient failure — retry next run
+    fp = _fingerprint(book)
+    if p["action"] == "none":
+        store.skip_put(book["book_id"], book.get("title"), fp, "none",
+                       reason=p.get("reason"), conf=p.get("confidence"))
+    elif p["action"] == "propose":                  # matched, but below the auto-apply gate
+        store.skip_put(book["book_id"], book.get("title"), fp, "propose-below",
+                       reason=p.get("reason"), conf=p.get("confidence"),
+                       chosen_id=p.get("chosen_id"), chosen_title=p.get("chosen_title"),
+                       isbn=p.get("isbn"))
 
 SYSTEM = (
     "You identify the correct Hardcover book for a library entry whose current "
@@ -77,17 +122,32 @@ def resolve(book):
     }
 
 
-def run_resolve(limit=None, book_ids=None, apply=False, min_conf=AUTO_CONF, g=None, store=None):
+def run_resolve(limit=None, book_ids=None, apply=False, min_conf=AUTO_CONF, g=None,
+                store=None, force=False):
     """Resolve the given books (or every audit-flagged mis-seed). With apply=True,
     heal the proposals at confidence >= min_conf via the real heal engine (set the
-    resolved ISBN + id + locks → refresh); the rest stay propose-only."""
+    resolved ISBN + id + locks → refresh); the rest stay propose-only.
+
+    Books already on the skip-list (resolved to no-match / below-threshold on a prior
+    run, title+author unchanged) are filtered out and returned under `skipped` instead
+    of being re-queried. `force` ignores the skip-list; an explicit `book_ids` is always
+    treated as a deliberate re-check (skip-list bypassed for those)."""
     if apply:
         assert_preconditions(g)
+    explicit = bool(book_ids)
     if book_ids:
         allb = {b["book_id"]: b for b in audit.all_books()}
         books = [allb[i] for i in book_ids if i in allb]
     else:
         books = [b for b, _ in audit.run_audit(limit=limit)["categories"].get("review-misseed", [])]
+    skipped = []
+    if store and not explicit and not force:
+        skips = store.skip_map()
+        active = []
+        for b in books:
+            row = _cached_skip(b, skips)
+            (skipped if row else active).append(row or b)
+        books = active
     run_id = (store.new_run_id() + "-resolve") if (apply and store) else None
     proposals, errors = [], 0
     for i, b in enumerate(books):
@@ -102,13 +162,14 @@ def run_resolve(limit=None, book_ids=None, apply=False, min_conf=AUTO_CONF, g=No
             except Exception as e:
                 p["applied"], p["apply_error"] = False, str(e)[:100]
                 errors += 1
-                if errors >= ABORT_ERRORS:
-                    p["aborted"] = True
-                    proposals.append(p)
-                    break
+        if apply and store:
+            _record_skip(store, b, p)
         proposals.append(p)
+        if p.get("apply_error") and errors >= ABORT_ERRORS:
+            p["aborted"] = True
+            break
     return {"count": len(proposals), "proposals": proposals, "run_id": run_id,
-            "applied": sum(1 for p in proposals if p.get("applied"))}
+            "applied": sum(1 for p in proposals if p.get("applied")), "skipped": skipped}
 
 
 def render(result):
@@ -117,10 +178,12 @@ def render(result):
     none = [p for p in props if p["action"] == "none"]
     err = [p for p in props if p["action"] == "error"]
     applied = [p for p in proposed if p.get("applied")]
+    skipped = result.get("skipped", [])
     L = [f"# Colophon mis-seed resolution — {time.strftime('%Y-%m-%d %H:%M')}",
          f"\n**{len(props)}** mis-seeds · **{len(applied)}** auto-applied · "
          f"**{len(proposed) - len(applied)}** proposed (below threshold) · "
-         f"**{len(none)}** no-match · **{len(err)}** error\n",
+         f"**{len(none)}** no-match · **{len(err)}** error · "
+         f"**{len(skipped)}** cached-skipped\n",
          "## Re-seeds\n"]
     for p in sorted(proposed, key=lambda p: -(p.get("confidence") or 0)):
         tag = "✓ APPLIED" if p.get("applied") else ("apply-FAILED" if p.get("apply_error") else "proposed")
@@ -139,4 +202,18 @@ def render(result):
         L.append("\n## Errors\n")
         for p in err:
             L.append(f"- `{p['book_id']}` {p['title']!r} — {p.get('reason', '')}")
+    if skipped:
+        below = [s for s in skipped if s.get("action") == "propose-below"]
+        L.append(f"\n## Cached unresolvable — not re-queried ({len(skipped)})\n")
+        if below:
+            L.append("Standing proposals (a match was found but below the auto-apply "
+                     "gate — apply manually if correct):\n")
+            for s in sorted(below, key=lambda s: -(s.get("conf") or 0)):
+                L.append(f"- `{s['book_id']}` {s.get('title')!r} → **{s.get('chosen_title')!r}** "
+                         f"(hcid {s.get('chosen_id')}, isbn {s.get('isbn')}, conf {s.get('conf')})")
+                L.append(f"    apply: `colophon resolve --book {s['book_id']} --apply --min-conf 0`")
+        n_none = len(skipped) - len(below)
+        if n_none:
+            L.append(f"\n{n_none} cached no-match. `colophon resolve --force` re-checks every "
+                     "skipped book; `colophon resolve --clear-skips` forgets them.")
     return "\n".join(L) + "\n"
