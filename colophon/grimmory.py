@@ -19,6 +19,10 @@ ADMIN_USER = os.environ.get("COLOPHON_ADMIN_USER", "admin")
 ADMIN_GROUP = os.environ.get("COLOPHON_ADMIN_GROUP", "admin")
 DB_CONTAINER = os.environ.get("COLOPHON_DB_CONTAINER", "grimmory-db")
 DB_NAME = os.environ.get("COLOPHON_DB_NAME", "grimmory")
+# Host path the grimmory library mounts from (e.g. /mnt/media/.../library). Set this
+# to enable EPUB inspection in resolve; book_file paths are relative to it. Unset =
+# the feature stays off (the resolver simply never inspects files).
+BOOKS_ROOT = os.environ.get("COLOPHON_BOOKS_ROOT")
 
 
 class GrimmoryError(Exception):
@@ -146,6 +150,26 @@ def snapshot(book_id):
         f"WHERE m.book_id={bid};"
     ).strip()
     return snap
+
+
+def epub_path(book_id):
+    """Host filesystem path of the book's largest EPUB, or None — read-only.
+
+    Requires BOOKS_ROOT (COLOPHON_BOOKS_ROOT): `book_file` stores paths relative to
+    grimmory's in-container library root, so we re-root them on the host. Returns None
+    when BOOKS_ROOT is unset, the book has no EPUB, or no row matches."""
+    if not BOOKS_ROOT:
+        return None
+    out = _db(
+        "SELECT IFNULL(file_sub_path,''), file_name FROM book_file "
+        f"WHERE book_id={int(book_id)} AND LOWER(file_name) LIKE '%.epub' "
+        "ORDER BY file_size_kb DESC LIMIT 1;"
+    ).strip()
+    if not out:
+        return None
+    parts = out.split("\t")
+    sub, name = (parts[0], parts[1]) if len(parts) == 2 else ("", parts[-1])
+    return os.path.join(BOOKS_ROOT, sub, name) if sub else os.path.join(BOOKS_ROOT, name)
 
 
 def signature(snap):

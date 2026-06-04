@@ -8,6 +8,7 @@ return the JSON response (useful when the key lives in a secrets manager). A lea
 """
 import json
 import os
+import re
 import subprocess
 import time
 import urllib.error
@@ -88,6 +89,27 @@ def book_by_id(hcid):
         "position": bs[0]["position"] if bs else None,
         "authors": authors,
     }
+
+
+def _norm_isbn(s):
+    return re.sub(r'[^0-9Xx]', '', s or '').upper()
+
+
+def book_by_isbn(isbn):
+    """Resolve an ISBN-13/10 to a Hardcover book (same dict shape as `book_by_id`),
+    or None. Goes through the allowed Typesense `search` and matches a hit whose
+    `isbns` contains the ISBN — broad Hasura `editions(where:{isbn_13})` filters are
+    403-restricted on this key tier (see `search`)."""
+    want = _norm_isbn(isbn)
+    if not want:
+        return None
+    for hit in search(want, per_page=8):
+        if hit.get("hcid") and want in {_norm_isbn(x) for x in (hit.get("isbns") or [])}:
+            try:
+                return book_by_id(hit["hcid"])
+            except Exception:
+                return None
+    return None
 
 
 def search(query_text, per_page=8):
