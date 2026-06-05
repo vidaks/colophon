@@ -122,6 +122,36 @@ class Verify(unittest.TestCase):
                  isbn_map={"978": _book("438682", "The Rise of Endymion")})
         self.assertEqual(r["verdict"], verify.MISMATCH)
 
+    def test_req_unresolved_holds_not_mismatch(self):
+        # Requested work fails to resolve (provider hiccup) AND the file's id differs:
+        # must HOLD (unverifiable), never MISMATCH — id-equality alone would wrongly
+        # reject a same-work/different-edition file and hard-delete a good book.
+        r = _run({"hcid": "438682"}, {"opf_isbns": ["978"]},
+                 isbn_map={"978": _book("999", "Some Edition")},
+                 by_id={})  # requested hc#438682 does not resolve
+        self.assertEqual(r["verdict"], verify.UNVERIFIABLE)
+        self.assertEqual(r["source"], "req-unresolved")
+
+    def test_req_unresolved_same_id_still_matches(self):
+        # Requested work fails to resolve but the file's id IS the requested id — the one
+        # safe positive (raw id match), so MATCH rather than a needless hold.
+        r = _run({"hcid": "438682"}, {"opf_isbns": ["978"]},
+                 isbn_map={"978": _book("438682", "The Rise of Endymion")},
+                 by_id={})
+        self.assertEqual(r["verdict"], verify.MATCH)
+        self.assertEqual(r["source"], "isbn-id")
+
+    def test_llm_req_unresolved_holds_not_mismatch(self):
+        # Same guard on the LLM-adjudicated path: chosen work resolves, requested does not,
+        # ids differ → HOLD, not MISMATCH.
+        sig = {"opf_isbns": [], "opf_title": "Some Book", "opf_author": "X"}
+        prop = {"action": "propose", "chosen_id": "888238",
+                "chosen_title": "Some Book", "confidence": 0.92}
+        r = _run_llm({"hcid": "111"}, sig, prop,
+                     by_id={"888238": _book("888238")})  # requested 111 does not resolve
+        self.assertEqual(r["verdict"], verify.UNVERIFIABLE)
+        self.assertEqual(r["source"], "req-unresolved")
+
     def test_isbn_lookup_raising_is_swallowed(self):
         # a flaky hardcover call must not crash the gate — it falls through to unverifiable
         with mock.patch.object(verify.epub, "inspect", return_value={"opf_isbns": ["x"]}), \

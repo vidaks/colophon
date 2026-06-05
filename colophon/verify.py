@@ -78,12 +78,26 @@ def verify(requested, file_path):
                 req_book = hardcover.book_by_id(req_hcid)
             except Exception:
                 req_book = None
-            same = _same_work(file_book, req_book) if req_book else (file_hcid == req_hcid)
-            verdict = MATCH if same else MISMATCH
-            rel = "same work as" if same else "different work from"
-            return _result(verdict, 0.97 if same else 0.9,
-                           f"file ISBN {isbn} -> hc#{file_hcid} {file_title!r}; {rel} requested hc#{req_hcid}",
-                           source="isbn-id", isbn=isbn, file_hcid=file_hcid, file_title=file_title)
+            if req_book:
+                same = _same_work(file_book, req_book)
+                verdict = MATCH if same else MISMATCH
+                rel = "same work as" if same else "different work from"
+                return _result(verdict, 0.97 if same else 0.9,
+                               f"file ISBN {isbn} -> hc#{file_hcid} {file_title!r}; {rel} requested hc#{req_hcid}",
+                               source="isbn-id", isbn=isbn, file_hcid=file_hcid, file_title=file_title)
+            # The requested work did NOT resolve (transient Hardcover failure, or an id
+            # the provider no longer knows). Comparing canonicals is impossible, so the
+            # only safe positive is a raw id match; anything else is HELD, never a
+            # MISMATCH. A same-work/different-edition file legitimately has a different
+            # hcid, and id-equality alone would call it a mismatch -> a wrong hard-delete
+            # of a good book during a provider hiccup. Holding re-queues for a later pass.
+            if file_hcid == req_hcid:
+                return _result(MATCH, 0.95,
+                               f"file ISBN {isbn} -> hc#{file_hcid} {file_title!r}; same id as requested hc#{req_hcid} (requested work did not resolve)",
+                               source="isbn-id", isbn=isbn, file_hcid=file_hcid, file_title=file_title)
+            return _result(UNVERIFIABLE, 0.0,
+                           f"requested hc#{req_hcid} did not resolve; file is hc#{file_hcid} {file_title!r} — cannot confirm same work",
+                           source="req-unresolved", isbn=isbn, file_hcid=file_hcid, file_title=file_title)
         if req_title:
             same = matcher._title_match(file_title or "", req_title)
             verdict = MATCH if same else MISMATCH
@@ -119,16 +133,32 @@ def verify(requested, file_path):
     file_title = prop.get("chosen_title")
     if req_hcid:
         try:
-            same = _same_work(hardcover.book_by_id(chosen), hardcover.book_by_id(req_hcid))
+            chosen_book = hardcover.book_by_id(chosen)
+            req_book = hardcover.book_by_id(req_hcid)
         except Exception:
-            same = chosen == req_hcid
-    elif req_title:
+            chosen_book = req_book = None
+        if chosen_book and req_book:
+            same = _same_work(chosen_book, req_book)
+            verdict = MATCH if same else MISMATCH
+            rel = "same work as" if same else "different work from"
+            return _result(verdict, round(min(conf, 0.9), 2),
+                           f"file adjudicated -> hc#{chosen} {file_title!r}; {rel} requested hc#{req_hcid}",
+                           source="llm-adjudicated", file_hcid=chosen, file_title=file_title)
+        # A work lookup didn't resolve — same reasoning as the deterministic path: only a
+        # raw id match is a safe positive, everything else is HELD (never a MISMATCH that
+        # would delete a good book when the provider is flaky).
+        if chosen == req_hcid:
+            return _result(MATCH, round(min(conf, 0.9), 2),
+                           f"file adjudicated -> hc#{chosen} {file_title!r}; same id as requested hc#{req_hcid} (a work lookup did not resolve)",
+                           source="llm-adjudicated", file_hcid=chosen, file_title=file_title)
+        return _result(UNVERIFIABLE, 0.0,
+                       f"file adjudicated -> hc#{chosen} {file_title!r}; requested hc#{req_hcid} or chosen work did not resolve — cannot confirm same work",
+                       source="req-unresolved", file_hcid=chosen, file_title=file_title)
+    if req_title:
         same = matcher._title_match(file_title or "", req_title)
-    else:
-        return _result(UNVERIFIABLE, 0.0, "no requested identity supplied", source="no-request")
-
-    verdict = MATCH if same else MISMATCH
-    rel = "same work as" if same else "different work from"
-    return _result(verdict, round(min(conf, 0.9), 2),
-                   f"file adjudicated -> hc#{chosen} {file_title!r}; {rel} requested",
-                   source="llm-adjudicated", file_hcid=chosen, file_title=file_title)
+        verdict = MATCH if same else MISMATCH
+        rel = "same work as" if same else "different work from"
+        return _result(verdict, round(min(conf, 0.9), 2),
+                       f"file adjudicated -> hc#{chosen} {file_title!r}; {rel} requested",
+                       source="llm-adjudicated", file_hcid=chosen, file_title=file_title)
+    return _result(UNVERIFIABLE, 0.0, "no requested identity supplied", source="no-request")
