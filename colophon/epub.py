@@ -53,7 +53,7 @@ def _dc(opf, tag):
 
 
 def inspect(path):
-    """Return {opf_isbns, colophon_text, opf_title, publisher, year} or None.
+    """Return {opf_isbns, colophon_text, opf_title, opf_author, publisher, year} or None.
 
     `colophon_text` is "" when no page looks like a colophon (e.g. indie EPUBs with
     only a cover) — the caller should treat empty as "no usable colophon signal"."""
@@ -98,6 +98,7 @@ def inspect(path):
         "opf_isbns": _isbns(opf),
         "colophon_text": best_text[:_MAX_COLOPHON] if best_hits else "",
         "opf_title": _dc(opf, "title"),
+        "opf_author": _dc(opf, "creator"),
         "publisher": _dc(opf, "publisher"),
         "year": (_dc(opf, "date") or "")[:4] or None,
     }
