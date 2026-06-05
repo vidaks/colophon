@@ -115,16 +115,17 @@ class Grimmory:
         return resp
 
     def delete_books(self, book_ids):
-        """Hard-delete catalog records by id (DELETE /api/v1/books {"ids":[…]}).
-        Removes the grimmory record + covers; the book FILE on disk is NOT removed
-        by grimmory (its deletes are file-safe) — the caller deletes the file. Used
-        only by the plan-22 acquisition gate to drop a confirmed wrong-work grab."""
+        """Hard-delete books by id: DELETE /api/v1/books?ids=<csv>. `ids` is a
+        @RequestParam Set<Long> — a QUERY parameter, NOT a JSON body (a body 500s;
+        confirmed against a live throwaway record). grimmory removes the record AND
+        its files; the response reports any `failedFileDeletions`, for which the
+        caller's own file unlink is the fallback. Used only by the plan-22 gate."""
         ids = [int(b) for b in book_ids]
         if not ids:
             return None
-        st, resp = self._call("DELETE", "/books", {"ids": ids})
+        st, resp = self._call("DELETE", "/books?ids=" + ",".join(str(i) for i in ids), None)
         if st not in (200, 204):
-            raise GrimmoryError(f"DELETE /books {ids} returned {st}: {resp[:200]}")
+            raise GrimmoryError(f"DELETE /books?ids={ids} returned {st}: {resp[:200]}")
         return resp
 
 
