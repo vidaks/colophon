@@ -79,6 +79,7 @@ class Inspect(unittest.TestCase):
     def test_metadata_fields(self):
         r = epub.inspect(self._epub(['<dc:identifier>urn:isbn:9781466849358</dc:identifier>']))
         self.assertEqual(r["opf_title"], "Lock In")
+        self.assertEqual(r["opf_author"], "John Scalzi")
         self.assertEqual(r["publisher"], "Tor")
         self.assertEqual(r["year"], "2014")
 

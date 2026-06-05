@@ -17,6 +17,7 @@ from .backfill import run as backfill_run
 from .grimmory import Grimmory, GrimmoryError
 from .heal import assert_preconditions, heal_book, revert_run, PreconditionError
 from .store import Store
+from .verify import verify
 
 
 def _fmt(snap, keys=("title", "series_name", "series_number", "isbn_13",
@@ -227,6 +228,22 @@ def cmd_maintain(args, g, store):
     return 0 if (res and res["ok"]) else 1
 
 
+def cmd_verify(args, g, store):
+    """Acquisition gate: is the file at <file> the requested work? Read-only — prints a
+    JSON verdict (match/mismatch/unverifiable) and exits 0/3/4 for scripting. The gate's
+    hook shim reads the JSON, not the exit code."""
+    requested = {}
+    if args.hcid:
+        requested["hcid"] = args.hcid
+    if args.title:
+        requested["title"] = args.title
+    if args.author:
+        requested["authors"] = args.author
+    result = verify(requested, args.file)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return {"match": 0, "mismatch": 3, "unverifiable": 4}.get(result["verdict"], 4)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="colophon", description="autonomous library metadata healer (Phase 0)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -266,13 +283,19 @@ def main(argv=None):
     mt.add_argument("--apply", action="store_true", help="actually write (default: dry-run)")
     mt.add_argument("--force", action="store_true", help="re-query cached-unresolvable mis-seeds this run")
     mt.add_argument("--email", action="store_true", help="always email the summary (a daily heartbeat)")
+    ve = sub.add_parser("verify", help="acquisition gate: is a downloaded file the requested work? (read-only)")
+    ve.add_argument("file", help="path to the downloaded book file")
+    ve.add_argument("--hcid", help="requested Hardcover work id (primary anchor)")
+    ve.add_argument("--title", help="requested title (degraded fallback when no --hcid)")
+    ve.add_argument("--author", help="requested author(s), used with --title")
     args = p.parse_args(argv)
 
     g, store = Grimmory(), Store()
     fn = {"precheck": cmd_precheck, "heal": cmd_heal, "log": cmd_log,
           "revert": cmd_revert, "backfill": cmd_backfill, "audit": cmd_audit,
           "resolve": cmd_resolve, "series-audit": cmd_series_audit,
-          "oversight": cmd_oversight, "maintain": cmd_maintain}[args.cmd]
+          "oversight": cmd_oversight, "maintain": cmd_maintain,
+          "verify": cmd_verify}[args.cmd]
     try:
         return fn(args, g, store)
     except (GrimmoryError, PreconditionError) as e:

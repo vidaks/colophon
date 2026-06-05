@@ -16,6 +16,17 @@ All notable changes to this project are documented here. The format is based on
   new `COLOPHON_BOOKS_ROOT` (the host path the library mounts from); unset ⇒ feature off.
   New module `colophon/epub.py` (stdlib-only) plus `hardcover.book_by_isbn` and
   `grimmory.epub_path` helpers.
+- **Acquisition-side `verify`** — a read-only `verify(requested, file)` (new module
+  `colophon/verify.py`; CLI `colophon verify <file> --hcid <id>` / `--title`) answering
+  *is this downloaded file the requested work?* at work granularity, for the
+  identifier-verified acquisition gate (plan 22). Deterministic path: the file's embedded
+  OPF ISBN → Hardcover work, compared to the requested work via the shared `canonical_id`.
+  No resolvable ISBN: the file is identified through the resolver's adjudicator (search by
+  the file's own title/author, fold in its colophon text — the LLM only ever selects a real
+  candidate) and that work is compared to the requested one; below `_LLM_MIN` (0.8)
+  confidence the file is held as `unverifiable`. Reuses `epub` + `hardcover` + `matcher` +
+  `resolver`; no writes, no grimmory DB at runtime. Exits 0/3/4 (match/mismatch/unverifiable).
+  `epub.inspect` now also returns `opf_author` (dc:creator).
 
 ## [0.2.0] — 2026-06-04
 
