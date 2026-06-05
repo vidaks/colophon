@@ -114,6 +114,19 @@ class Grimmory:
             raise GrimmoryError(f"refresh task start returned {st}: {resp[:200]}")
         return resp
 
+    def delete_books(self, book_ids):
+        """Hard-delete catalog records by id (DELETE /api/v1/books {"ids":[…]}).
+        Removes the grimmory record + covers; the book FILE on disk is NOT removed
+        by grimmory (its deletes are file-safe) — the caller deletes the file. Used
+        only by the plan-22 acquisition gate to drop a confirmed wrong-work grab."""
+        ids = [int(b) for b in book_ids]
+        if not ids:
+            return None
+        st, resp = self._call("DELETE", "/books", {"ids": ids})
+        if st not in (200, 204):
+            raise GrimmoryError(f"DELETE /books {ids} returned {st}: {resp[:200]}")
+        return resp
+
 
 # --- read-only snapshot ------------------------------------------------------
 SNAPSHOT_COLS = [
@@ -134,6 +147,16 @@ def _db(sql):
     if r.returncode != 0:
         raise GrimmoryError(f"db read failed: {r.stderr.strip()[:200]}")
     return r.stdout
+
+
+def book_ids_by_filename(file_name):
+    """book_id(s) whose `book_file.file_name` matches exactly — read-only. Lets the
+    acquisition gate resolve a just-landed grab to its grimmory record(s) before
+    deleting it. Single quotes in the name are SQL-escaped (titles like
+    "Salvation's Child")."""
+    safe = (file_name or "").replace("'", "''")
+    out = _db(f"SELECT book_id FROM book_file WHERE file_name='{safe}';").strip()
+    return [int(x) for x in out.split() if x.strip().isdigit()]
 
 
 def snapshot(book_id):
