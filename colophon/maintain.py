@@ -12,7 +12,7 @@ failure into the result so the caller can always render + send a report.
 """
 import time
 
-from . import backfill
+from . import backfill, grimmory
 from .heal import assert_preconditions
 from .resolver import run_resolve
 
@@ -42,7 +42,29 @@ def run_maintain(g, store, limit=20, min_conf=0.9, apply=False, force=False):
     except Exception as e:  # noqa: BLE001
         res["ok"] = False
         res["errors"].append(f"resolve: {str(e)[:200]}")
+    # Informational only — surfacing the enrich stuck-list must never fail the run.
+    res["stuck"] = []
+    try:
+        res["stuck"] = _gather_stuck(store)
+    except Exception as e:  # noqa: BLE001
+        res["stuck_error"] = str(e)[:200]
     return res
+
+
+def _gather_stuck(store):
+    """The actionable manual-review list: un-seeded books the enrich sweep gave up
+    on and has not yet surfaced. Decorated with title/author/isbn + a UI deep-link."""
+    rows = store.enrich_stuck_unreported()
+    if not rows:
+        return []
+    briefs = grimmory.briefs([r["book_id"] for r in rows])
+    out = []
+    for r in rows:
+        b = briefs.get(r["book_id"], {})
+        out.append({"book_id": r["book_id"], "title": b.get("title") or "(unknown)",
+                    "authors": b.get("authors") or "", "isbn": b.get("isbn") or "",
+                    "fail_count": r["fail_count"], "url": grimmory.book_url(r["book_id"])})
+    return out
 
 
 def verdict(res):
@@ -109,6 +131,19 @@ def render_summary(res):
                 L.append(f"    ? book {bid} {title!r} → {chosen!r} (conf {conf})")
     else:
         L.append("Resolve: did not run")
+
+    stuck = res.get("stuck") or []
+    if stuck:
+        L.append("")
+        L.append(f"Unresolvable — manual review ({len(stuck)}): bare imports Hardcover can't "
+                 "match (no/odd ISBN, self-pub).")
+        L.append("  Delete or keep each via its link; listed here ONCE, then silence = keep.")
+        for s in stuck:
+            who = f" — {s['authors']}" if s["authors"] else ""
+            isbn = f" · isbn {s['isbn']}" if s["isbn"] else " · no isbn"
+            L.append(f"  ? book {s['book_id']} {s['title']!r}{who}{isbn} (failed {s['fail_count']}x)")
+            if s.get("url"):
+                L.append(f"      {s['url']}")
 
     L += ["", "Full reports under reports/ on the host."]
     return "\n".join(L) + "\n"
