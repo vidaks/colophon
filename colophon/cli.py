@@ -298,9 +298,10 @@ def main(argv=None):
     rs.add_argument("--min-conf", type=float, default=0.9)
     rs.add_argument("--force", action="store_true", help="re-query books on the cached-unresolvable skip-list")
     rs.add_argument("--clear-skips", action="store_true", help="forget all cached-unresolvable entries, then exit")
-    sn = sub.add_parser("series-audit", help="Phase 3 — series-numbering audit (read-only unless --apply)")
+    sn = sub.add_parser("series-audit", help="Phase 3 — series numbering + grouping audit (read-only unless --apply)")
     sn.add_argument("--limit", type=int, default=None)
-    sn.add_argument("--apply", action="store_true", help="heal clean number mismatches (reuses the heal path)")
+    sn.add_argument("--apply", action="store_true",
+                    help="heal clean number-mismatch / number-missing / series-name-missing (reuses the heal path)")
     ov = sub.add_parser("oversight", help="Phase 4b — weekly changelog oversight + verdict (emails only if flagged)")
     ov.add_argument("--days", type=int, default=7)
     ov.add_argument("--email", action="store_true", help="email the digest only when flagged (DRIFT/REVIEW)")

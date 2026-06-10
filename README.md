@@ -37,8 +37,10 @@ lock pins the edition, so a healed book *stays* healed (set-once, no oscillation
   the metadata provider for candidates and asks an LLM to pick the *same work* — but only
   from the retrieved set, validated against it (the model can never invent an id), and
   only auto-applies above a confidence threshold. Below it, or on doubt: left flagged.
-- **Series audit** — compares each book's series number against the provider's
-  authoritative position and heals genuine mismatches (read-only by default).
+- **Series audit** — compares each book's series number *and* grouping against the provider's
+  authoritative series, and heals genuine mismatches: a wrong/missing number, an ungrouped book (no
+  series name), or a variant series name where the title still matches the provider. A true mis-seed
+  (name *and* title disagree) is left for the resolver. Read-only by default; runs nightly.
 - **Dedup** — collapses duplicate records, moving the loser's file onto the keeper as an
   *alternative format* (nothing deleted from disk) and removing the empty record.
 - **Oversight** — a weekly changelog review that flags drift (a book healed more than
@@ -100,7 +102,7 @@ python -m colophon.cli backfill --apply         # heal broken ISBNs
 python -m colophon.cli enrich --apply           # seed bare no-id imports; remember the unresolvable
 python -m colophon.cli resolve --apply          # LLM-resolve mis-identified books (>= 0.9 conf)
 python -m colophon.cli resolve --force          # re-query the cached-unresolvable mis-seeds
-python -m colophon.cli series-audit             # series-number report (read-only)
+python -m colophon.cli series-audit             # series numbering + grouping report (read-only)
 python -m colophon.cli maintain --apply --email # backfill + resolve in one run + summary email
 python -m colophon.cli oversight --days 7       # weekly changelog review + verdict
 python -m colophon.cli log                      # the change history
