@@ -54,6 +54,24 @@ class Store:
                     attempts INTEGER NOT NULL DEFAULT 1
                 )"""
             )
+            # Un-seeded books (no Hardcover id — the bare watch-imports) that the
+            # enrich sweep keeps failing to match. `fail_count` is the number of
+            # sweeps the book has been seen still un-seeded; at the stuck threshold
+            # it is marked `stuck` (dropped from the 30-min sweep so it stops being
+            # re-poked) and surfaced ONCE in the daily digest (`reported`) for the
+            # human to delete or keep. A book that seeds or is deleted drops out of
+            # the un-seeded set and is pruned from this table.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS enrich_state(
+                    book_id INTEGER PRIMARY KEY,
+                    fail_count INTEGER NOT NULL DEFAULT 0,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    stuck INTEGER NOT NULL DEFAULT 0,
+                    stuck_since TEXT,
+                    reported INTEGER NOT NULL DEFAULT 0
+                )"""
+            )
 
     def epoch(self):
         """Re-audit epoch. Settled (locked) books are only re-opened when this is
@@ -129,6 +147,53 @@ class Store:
             if book_id is None:
                 return c.execute("DELETE FROM resolve_skip").rowcount
             return c.execute("DELETE FROM resolve_skip WHERE book_id=?", (int(book_id),)).rowcount
+
+    # --- enrich memory (don't keep re-poking the unseedable; surface them once) ---
+
+    def enrich_observe(self, unseeded_ids, stuck_after):
+        """Record one enrich sweep. `unseeded_ids` is the full current set of books
+        that still lack a Hardcover id. Each is upserted with fail_count+1; any
+        previously-tracked id NOT in the set has seeded or been deleted, so it is
+        pruned. A book crosses to `stuck` at fail_count >= stuck_after. Returns the
+        set of currently-stuck book_ids."""
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        ids = {int(b) for b in unseeded_ids}
+        with self._conn() as c:
+            tracked = {r["book_id"] for r in c.execute("SELECT book_id FROM enrich_state")}
+            gone = tracked - ids
+            if gone:
+                c.executemany("DELETE FROM enrich_state WHERE book_id=?", [(b,) for b in gone])
+            for b in ids:
+                c.execute(
+                    "INSERT INTO enrich_state(book_id,fail_count,first_seen,last_seen) "
+                    "VALUES(?,1,?,?) ON CONFLICT(book_id) DO UPDATE SET "
+                    "fail_count=fail_count+1, last_seen=excluded.last_seen",
+                    (b, now, now),
+                )
+            c.execute("UPDATE enrich_state SET stuck=1, stuck_since=? "
+                      "WHERE stuck=0 AND fail_count>=?", (now, int(stuck_after)))
+            return [r["book_id"] for r in
+                    c.execute("SELECT book_id FROM enrich_state WHERE stuck=1")]
+
+    def enrich_stuck_ids(self):
+        """All currently-stuck book_ids (excluded from the sweep)."""
+        with self._conn() as c:
+            return [r["book_id"] for r in
+                    c.execute("SELECT book_id FROM enrich_state WHERE stuck=1")]
+
+    def enrich_stuck_unreported(self):
+        """Stuck books not yet surfaced in a digest (the actionable list)."""
+        with self._conn() as c:
+            return [dict(r) for r in c.execute(
+                "SELECT * FROM enrich_state WHERE stuck=1 AND reported=0 ORDER BY book_id")]
+
+    def enrich_mark_reported(self, book_ids):
+        """Mark stuck books as surfaced — they will not appear in a later digest
+        (silence = keep). Returns rows touched."""
+        with self._conn() as c:
+            return c.executemany(
+                "UPDATE enrich_state SET reported=1 WHERE book_id=?",
+                [(int(b),) for b in book_ids]).rowcount
 
     @staticmethod
     def loads(row, field):

@@ -23,6 +23,10 @@ DB_NAME = os.environ.get("COLOPHON_DB_NAME", "grimmory")
 # to enable EPUB inspection in resolve; book_file paths are relative to it. Unset =
 # the feature stays off (the resolver simply never inspects files).
 BOOKS_ROOT = os.environ.get("COLOPHON_BOOKS_ROOT")
+# Public base URL of the grimmory UI (e.g. https://books.example.com). Set this to
+# put a deep-link to each book's page in the daily digest's manual-review list.
+# Unset = the digest lists the books without links. The UI route is /book/<id>.
+BOOKSTORE_URL = os.environ.get("COLOPHON_BOOKSTORE_URL")
 
 
 class GrimmoryError(Exception):
@@ -158,6 +162,38 @@ def book_ids_by_filename(file_name):
     safe = (file_name or "").replace("'", "''")
     out = _db(f"SELECT book_id FROM book_file WHERE file_name='{safe}';").strip()
     return [int(x) for x in out.split() if x.strip().isdigit()]
+
+
+def book_url(book_id):
+    """Deep-link to the book's page in the grimmory UI (Authelia-gated), or None if
+    COLOPHON_BOOKSTORE_URL is unset. The digest links here; deletion happens via the
+    UI's own button — no destructive link is ever put in an email."""
+    if not BOOKSTORE_URL:
+        return None
+    return f"{BOOKSTORE_URL.rstrip('/')}/book/{int(book_id)}"
+
+
+def briefs(book_ids):
+    """{book_id: {title, isbn, authors}} for the given ids — read-only, for the
+    digest's manual-review list. Empty in, empty out."""
+    ids = [int(b) for b in book_ids]
+    if not ids:
+        return {}
+    csv = ",".join(str(b) for b in ids)
+    out = _db(
+        "SELECT bm.book_id, IFNULL(bm.title,''), IFNULL(bm.isbn_13,''), "
+        "IFNULL((SELECT GROUP_CONCAT(a.name ORDER BY m.sort_order SEPARATOR ', ') "
+        "  FROM book_metadata_author_mapping m JOIN author a ON a.id=m.author_id "
+        "  WHERE m.book_id=bm.book_id),'') "
+        f"FROM book_metadata bm WHERE bm.book_id IN ({csv});"
+    )
+    res = {}
+    for line in out.splitlines():
+        col = line.split("\t")
+        if len(col) < 4:
+            continue
+        res[int(col[0])] = {"title": col[1], "isbn": col[2], "authors": col[3]}
+    return res
 
 
 def snapshot(book_id):
