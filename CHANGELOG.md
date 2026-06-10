@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **`enrich` — seed bare imports + remember the unresolvable.** Watch-imports arrive with
+  no provider id and the server never auto-enriches them, so a frequent sweep submits a
+  `REPLACE_MISSING` refresh for the no-hcid books. New `colophon/enrich.py` + the
+  `colophon enrich` subcommand (dry-run unless `--apply`, precondition-gated). The sweep now
+  has **memory** (new `store.enrich_state` table): a book that never seeds is marked *stuck*
+  after `COLOPHON_ENRICH_STUCK_AFTER` failed sweeps (default 6), dropped from the sweep — so
+  it stops being re-poked every cycle — and surfaced **once** in the `maintain` digest with a
+  UI deep-link (`COLOPHON_BOOKSTORE_URL`, route `/book/<id>`) for the human to delete or keep
+  (silence = keep). `maintain` marks a book reported only after a successful email on an
+  `--apply` run. Replaces the memory-less external enrich loop that re-refreshed the same
+  unmatchable books indefinitely.
 - **EPUB inspection for low-confidence mis-seeds** — when `resolve` lands below the
   confidence gate (or finds no match), it now inspects the book's own EPUB and
   re-adjudicates with two extra signals: the OPF `dc:identifier` ISBN (a real ISBN that

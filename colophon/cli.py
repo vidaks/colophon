@@ -125,6 +125,24 @@ def cmd_backfill(args, g, store):
     return 0
 
 
+def cmd_enrich(args, g, store):
+    """Seed bare watch-imports (no Hardcover id) via a REPLACE_MISSING refresh, with
+    memory: a book that never seeds is marked stuck after N failed sweeps — dropped
+    from the sweep (the churn stops) and surfaced once in the daily digest. Dry-run
+    unless --apply."""
+    from . import enrich as E
+    stuck_after = args.stuck_after if args.stuck_after is not None else E.STUCK_AFTER
+    res = E.run_enrich(g, store, apply=args.apply, stuck_after=stuck_after)
+    mode = "APPLIED" if args.apply else "DRY-RUN (no write)"
+    print(f"[{mode}] enrich — {len(res['unseeded'])} un-seeded · "
+          f"{len(res['active'])} {'refreshed' if res['submitted'] else 'to refresh'} · "
+          f"{len(res['stuck'])} stuck (excluded; stuck_after={res['stuck_after']})")
+    if res["stuck"]:
+        print("  stuck — need manual review (surfaced in the daily digest): "
+              + " ".join(str(b) for b in res["stuck"]))
+    return 0
+
+
 def cmd_audit(args, g, store):
     res = run_audit(limit=args.limit)
     report = render_report(res)
@@ -225,6 +243,11 @@ def cmd_maintain(args, g, store):
                             "Check `journalctl -u colophon.service` on the host.\n")
             ok, detail = oversight.send_email(subject, mail)
             print(f"email: {detail}")
+            # Surface each stuck book exactly once — only after it has actually been
+            # emailed, and only on a real (apply) run so dry-run testing doesn't
+            # consume the one-shot report. Silence thereafter = the human keeps it.
+            if ok and args.apply and res and res.get("stuck"):
+                store.enrich_mark_reported([s["book_id"] for s in res["stuck"]])
     return 0 if (res and res["ok"]) else 1
 
 
@@ -262,6 +285,10 @@ def main(argv=None):
     bf = sub.add_parser("backfill", help="survey the library + propose heals (dry-run unless --apply)")
     bf.add_argument("--limit", type=int, default=20)
     bf.add_argument("--apply", action="store_true")
+    en = sub.add_parser("enrich", help="seed bare watch-imports (no hcid) + remember the unresolvable (dry-run unless --apply)")
+    en.add_argument("--apply", action="store_true", help="actually submit the refresh (default: dry-run)")
+    en.add_argument("--stuck-after", type=int, default=None,
+                    help="mark a book stuck after N failed sweeps (default: COLOPHON_ENRICH_STUCK_AFTER or 6)")
     au = sub.add_parser("audit", help="read-only library audit + report (writes nothing)")
     au.add_argument("--limit", type=int, default=None)
     rs = sub.add_parser("resolve", help="Haiku-resolve mis-seeds (propose-only unless --apply)")
@@ -292,8 +319,8 @@ def main(argv=None):
 
     g, store = Grimmory(), Store()
     fn = {"precheck": cmd_precheck, "heal": cmd_heal, "log": cmd_log,
-          "revert": cmd_revert, "backfill": cmd_backfill, "audit": cmd_audit,
-          "resolve": cmd_resolve, "series-audit": cmd_series_audit,
+          "revert": cmd_revert, "backfill": cmd_backfill, "enrich": cmd_enrich,
+          "audit": cmd_audit, "resolve": cmd_resolve, "series-audit": cmd_series_audit,
           "oversight": cmd_oversight, "maintain": cmd_maintain,
           "verify": cmd_verify}[args.cmd]
     try:

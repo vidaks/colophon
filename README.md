@@ -29,6 +29,10 @@ lock pins the edition, so a healed book *stays* healed (set-once, no oscillation
 
 - **Backfill** — books with a correct provider id but a broken/missing ISBN → set the
   canonical ISBN, lock, refresh.
+- **Enrich** — bare imports that arrive with *no* provider id → submit a missing-only
+  refresh so they seed. Books that can never match (no/odd ISBN, self-published editions
+  the provider lacks) are remembered after a few failed sweeps, dropped from the sweep, and
+  surfaced **once** in the daily summary with a link — delete or keep, your call.
 - **Resolve** — mis-identified books (title disagrees with the matched work). Searches
   the metadata provider for candidates and asks an LLM to pick the *same work* — but only
   from the retrieved set, validated against it (the model can never invent an id), and
@@ -83,6 +87,8 @@ Copy `.env.example` to `.env` and fill it in (or export the variables):
 | `COLOPHON_DB`, `COLOPHON_REPORTS` | where to write the changelog + reports |
 | `COLOPHON_RESOLVE_RETRY_DAYS` | re-query a cached-unresolvable mis-seed after N days (default `0` = never) |
 | `COLOPHON_BOOKS_ROOT` | host path of the library root; set it to let `resolve` inspect a below-threshold book's own EPUB (OPF ISBN + colophon). Unset ⇒ feature off |
+| `COLOPHON_BOOKSTORE_URL` | public UI base; set it to deep-link each stuck book in the digest (route `/book/<id>`). Unset ⇒ listed without links |
+| `COLOPHON_ENRICH_STUCK_AFTER` | mark a bare import stuck after N failed `enrich` sweeps (default `6`) |
 | `SMTP_*`, `OVERSIGHT_TO` | oversight + `maintain --email` summaries |
 
 ## Usage
@@ -91,6 +97,7 @@ Copy `.env.example` to `.env` and fill it in (or export the variables):
 python -m colophon.cli precheck                 # assert the files-never-touched preconditions
 python -m colophon.cli backfill                 # survey + propose (dry-run)
 python -m colophon.cli backfill --apply         # heal broken ISBNs
+python -m colophon.cli enrich --apply           # seed bare no-id imports; remember the unresolvable
 python -m colophon.cli resolve --apply          # LLM-resolve mis-identified books (>= 0.9 conf)
 python -m colophon.cli resolve --force          # re-query the cached-unresolvable mis-seeds
 python -m colophon.cli series-audit             # series-number report (read-only)
