@@ -12,14 +12,14 @@ failure into the result so the caller can always render + send a report.
 """
 import time
 
-from . import backfill, grimmory
+from . import backfill, grimmory, series_audit
 from .heal import assert_preconditions
 from .resolver import run_resolve
 
 
 def run_maintain(g, store, limit=20, min_conf=0.9, apply=False, force=False):
     res = {"ts": time.strftime("%Y-%m-%d %H:%M"), "apply": apply, "ok": True,
-           "aborted": False, "backfill": None, "resolve": None, "errors": []}
+           "aborted": False, "backfill": None, "resolve": None, "series": None, "errors": []}
     if apply:
         try:
             assert_preconditions(g)
@@ -42,6 +42,15 @@ def run_maintain(g, store, limit=20, min_conf=0.9, apply=False, force=False):
     except Exception as e:  # noqa: BLE001
         res["ok"] = False
         res["errors"].append(f"resolve: {str(e)[:200]}")
+    # Series: numbering + grouping. Auto-heals clean number-mismatch/number-missing
+    # and the ungrouped series-name-missing cases; series-mismatch stays for resolve.
+    try:
+        res["series"] = series_audit.run(apply=apply, g=g, store=store)
+        if res["series"]["errors"]:
+            res["ok"] = False
+    except Exception as e:  # noqa: BLE001
+        res["ok"] = False
+        res["errors"].append(f"series: {str(e)[:200]}")
     # Informational only — surfacing the enrich stuck-list must never fail the run.
     res["stuck"] = []
     try:
@@ -76,7 +85,8 @@ def verdict(res):
 def _healed_count(res):
     bf = (res["backfill"] or {}).get("healed", 0)
     rs = sum(1 for p in (res["resolve"] or {}).get("proposals", []) if p.get("applied"))
-    return bf + rs
+    sa = (res.get("series") or {}).get("healed", 0)
+    return bf + rs + sa
 
 
 def subject(res):
@@ -131,6 +141,21 @@ def render_summary(res):
                 L.append(f"    ? book {bid} {title!r} → {chosen!r} (conf {conf})")
     else:
         L.append("Resolve: did not run")
+
+    sa = res.get("series")
+    if sa:
+        cats = sa["categories"]
+        smis = len(cats.get("series-mismatch", []))
+        L.append(f"Series (numbering + grouping): {sa['total']} scanned · {sa['healed']} healed · "
+                 f"{smis} series-mismatch → resolver · {sa['errors']} errors"
+                 + ("  ABORTED (circuit-breaker)" if sa.get("errors", 0) >= series_audit.ABORT_ERRORS else ""))
+        for k in ("number-mismatch", "number-missing", "series-name-missing", "series-name-variant"):
+            for rec in cats.get(k, []):
+                if rec.get("applied"):
+                    b = rec["book"]
+                    L.append(f"  + book {b['book_id']} {b['title']!r} — {rec['reason']}")
+    else:
+        L.append("Series: did not run")
 
     stuck = res.get("stuck") or []
     if stuck:
