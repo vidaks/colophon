@@ -17,6 +17,11 @@ import urllib.request
 GRIMMORY_URL = os.environ.get("GRIMMORY_URL", "http://localhost:6060/api/v1")
 ADMIN_USER = os.environ.get("COLOPHON_ADMIN_USER", "admin")
 ADMIN_GROUP = os.environ.get("COLOPHON_ADMIN_GROUP", "admin")
+# Shared secret the trusted reverse proxy sends in X-Edda-Proxy-Auth; the Edda
+# fork honors the Remote-* headers only when it matches (plexarr plan 24 F1).
+# colophon mints from the host (not through the proxy), so it presents the secret
+# directly. Unset = omit the header (works against an unguarded/upstream server).
+PROXY_AUTH_SECRET = os.environ.get("COLOPHON_PROXY_AUTH_SECRET", "")
 DB_CONTAINER = os.environ.get("COLOPHON_DB_CONTAINER", "grimmory-db")
 DB_NAME = os.environ.get("COLOPHON_DB_NAME", "grimmory")
 # Host path the grimmory library mounts from (e.g. /mnt/media/.../library). Set this
@@ -41,9 +46,12 @@ class Grimmory:
     def token(self):
         if self._token:
             return self._token
+        headers = {"Remote-User": ADMIN_USER, "Remote-Groups": ADMIN_GROUP}
+        if PROXY_AUTH_SECRET:
+            headers["X-Edda-Proxy-Auth"] = PROXY_AUTH_SECRET
         req = urllib.request.Request(
             f"{self.base}/auth/remote",
-            headers={"Remote-User": ADMIN_USER, "Remote-Groups": ADMIN_GROUP},
+            headers=headers,
         )
         self._token = json.load(urllib.request.urlopen(req, timeout=30)).get("accessToken")
         if not self._token:
