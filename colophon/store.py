@@ -8,8 +8,12 @@ import json
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
 
-DB_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "colophon.db")
+# Repo-relative by default; COLOPHON_DB overrides it (e.g. a persistent path for a
+# deployed service). Unset keeps the historical <repo>/colophon.db location.
+DB_PATH = os.environ.get("COLOPHON_DB") or os.path.join(
+    os.path.dirname(__file__), os.pardir, "colophon.db")
 
 
 class Store:
@@ -87,10 +91,18 @@ class Store:
                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(e),))
         return e
 
+    @contextmanager
     def _conn(self):
+        """A connection that commits on clean exit and ALWAYS closes — the bare
+        sqlite3 context manager commits but leaks the handle (fd leak + a noisy
+        ResourceWarning in the long-running maintain process)."""
         c = sqlite3.connect(self.path)
         c.row_factory = sqlite3.Row
-        return c
+        try:
+            yield c
+            c.commit()
+        finally:
+            c.close()
 
     @staticmethod
     def new_run_id():

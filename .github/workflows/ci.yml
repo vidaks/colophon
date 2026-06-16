@@ -26,3 +26,5 @@ jobs:
         run: |
           python -m pip install --quiet ruff
           ruff check --output-format=github .
+      - name: Tests (stdlib unittest, network-free)
+        run: python -m unittest discover -s tests -v

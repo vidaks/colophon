@@ -41,8 +41,9 @@ lock pins the edition, so a healed book *stays* healed (set-once, no oscillation
   authoritative series, and heals genuine mismatches: a wrong/missing number, an ungrouped book (no
   series name), or a variant series name where the title still matches the provider. A true mis-seed
   (name *and* title disagree) is left for the resolver. Read-only by default; runs nightly.
-- **Dedup** — collapses duplicate records, moving the loser's file onto the keeper as an
-  *alternative format* (nothing deleted from disk) and removing the empty record.
+- **Dedup (audit-only)** — the `audit` report groups duplicate records and names a
+  suggested keeper (largest file; newest on a tie). Collapsing them is left to you —
+  Colophon never deletes or merges records on its own.
 - **Oversight** — a weekly changelog review that flags drift (a book healed more than
   once = convergence failing; sustained error rate) and emails you *only when flagged*.
 
@@ -127,9 +128,9 @@ the safety net (there is no human approval gate):
 - **Bounded blast radius** — per-run limits + a circuit-breaker that stops on repeated errors.
 
 ⚠️ **Two things to know:**
-1. **Dedup is not `revert`-able.** It moves a file and deletes a record; the loser's bytes
-   survive as an alternative format on the keeper, but there is no changelog undo. Re-import
-   if you need the separate record back.
+1. **Not every write is `revert`-able.** Metadata *heals* are — that is what `revert`
+   replays. `enrich` is a missing-only refresh that fills empty fields on unidentified
+   books; it is additive and not changelog-tracked, so `revert` does not cover it.
 2. **Data leaves your machine.** `resolve` and `series-audit` send book titles/authors to
    Hardcover and (for `resolve`) Anthropic. Don't run it on data you can't share with them.
 
