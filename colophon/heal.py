@@ -7,8 +7,6 @@ write is recorded; revert replays the changelog's before-state through the API.
 from .grimmory import snapshot, signature, wait_for_change
 from .store import Store
 
-MAX_PER_RUN = 50  # rate-limit: refuse to change more than this in one run
-
 
 class PreconditionError(Exception):
     pass

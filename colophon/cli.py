@@ -27,6 +27,15 @@ def _fmt(snap, keys=("title", "series_name", "series_number", "isbn_13",
     return " | ".join(f"{k}={snap.get(k)}" for k in keys)
 
 
+def _reports_dir():
+    """Directory reports are written to (created if missing). COLOPHON_REPORTS
+    overrides the repo-relative default."""
+    d = os.environ.get("COLOPHON_REPORTS") or os.path.abspath(
+        os.path.join(os.path.dirname(__file__), os.pardir, "reports"))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def cmd_precheck(args, g, store):
     ok, details = g.preconditions()
     print("preconditions (book files must never be touched):")
@@ -146,9 +155,7 @@ def cmd_enrich(args, g, store):
 def cmd_audit(args, g, store):
     res = run_audit(limit=args.limit)
     report = render_report(res)
-    reports_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "reports"))
-    os.makedirs(reports_dir, exist_ok=True)
-    path = os.path.join(reports_dir, f"audit-{time.strftime('%Y%m%dT%H%M%S')}.md")
+    path = os.path.join(_reports_dir(), f"audit-{time.strftime('%Y%m%dT%H%M%S')}.md")
     with open(path, "w") as f:
         f.write(report)
     print(report)
@@ -172,9 +179,7 @@ def cmd_resolve(args, g, store):
         print(e)
         return 2
     report = render(res)
-    reports_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "reports"))
-    os.makedirs(reports_dir, exist_ok=True)
-    path = os.path.join(reports_dir, f"resolve-{time.strftime('%Y%m%dT%H%M%S')}.md")
+    path = os.path.join(_reports_dir(), f"resolve-{time.strftime('%Y%m%dT%H%M%S')}.md")
     with open(path, "w") as f:
         f.write(report)
     print(report)
@@ -190,9 +195,7 @@ def cmd_series_audit(args, g, store):
         print(e)
         return 2
     report = render(res)
-    reports_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "reports"))
-    os.makedirs(reports_dir, exist_ok=True)
-    path = os.path.join(reports_dir, f"series-{time.strftime('%Y%m%dT%H%M%S')}.md")
+    path = os.path.join(_reports_dir(), f"series-{time.strftime('%Y%m%dT%H%M%S')}.md")
     with open(path, "w") as f:
         f.write(report)
     print(report)
@@ -204,9 +207,7 @@ def cmd_oversight(args, g, store):
     from . import oversight
     res = oversight.review(store, days=args.days)
     report = oversight.render(res)
-    reports_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "reports"))
-    os.makedirs(reports_dir, exist_ok=True)
-    path = os.path.join(reports_dir, f"oversight-{time.strftime('%Y%m%dT%H%M%S')}.md")
+    path = os.path.join(_reports_dir(), f"oversight-{time.strftime('%Y%m%dT%H%M%S')}.md")
     with open(path, "w") as f:
         f.write(report)
     print(report)
@@ -228,9 +229,7 @@ def cmd_maintain(args, g, store):
         res = M.run_maintain(g, store, limit=args.limit, min_conf=args.min_conf,
                              apply=args.apply, force=args.force)
         body = M.render_summary(res)
-        reports_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "reports"))
-        os.makedirs(reports_dir, exist_ok=True)
-        path = os.path.join(reports_dir, f"maintain-{time.strftime('%Y%m%dT%H%M%S')}.md")
+        path = os.path.join(_reports_dir(), f"maintain-{time.strftime('%Y%m%dT%H%M%S')}.md")
         with open(path, "w") as f:
             f.write(body)
         print(body)

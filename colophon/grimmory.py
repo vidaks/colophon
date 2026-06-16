@@ -53,7 +53,13 @@ class Grimmory:
             f"{self.base}/auth/remote",
             headers=headers,
         )
-        self._token = json.load(urllib.request.urlopen(req, timeout=30)).get("accessToken")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                self._token = json.load(r).get("accessToken")
+        except (urllib.error.HTTPError, urllib.error.URLError) as e:
+            # A bad proxy-auth secret or unreachable server surfaces here; make it a
+            # clean GrimmoryError (the CLI handler catches that, not raw urllib errors).
+            raise GrimmoryError(f"token mint failed at {self.base}/auth/remote: {e}")
         if not self._token:
             raise GrimmoryError("failed to mint admin token (Remote-User auth)")
         return self._token

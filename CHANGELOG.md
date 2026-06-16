@@ -39,6 +39,27 @@ All notable changes to this project are documented here. The format is based on
   `resolver`; no writes, no grimmory DB at runtime. Exits 0/3/4 (match/mismatch/unverifiable).
   `epub.inspect` now also returns `opf_author` (dc:creator).
 
+### Changed
+- **CI now runs the test suite.** The workflow compiled and linted but never ran the
+  69-test (network-free) suite, despite the docs stating it gates CI; added the
+  `unittest discover` step across Python 3.9–3.12.
+- **`COLOPHON_DB` and `COLOPHON_REPORTS` are now honored.** Both were documented in the
+  README and `.env.example` but ignored — the changelog DB and reports always landed at
+  repo-relative paths. They now override those defaults (unset ⇒ unchanged behavior). The
+  five duplicated report-directory blocks in the CLI collapsed into one helper.
+
+### Fixed
+- **Store no longer leaks SQLite connections.** `_conn()` used the bare `sqlite3`
+  context manager, which commits but never closes — an fd leak and a `ResourceWarning`
+  storm in the long-running `maintain` process. It now commits *and* closes.
+- **Token-mint failures surface cleanly.** A bad `X-Edda-Proxy-Auth` secret or an
+  unreachable server raised a raw `urllib` error past the CLI's handler; it is now a
+  `GrimmoryError` with the endpoint and cause.
+- **Corrected the dedup docs.** The README and CHANGELOG described "collapses duplicate
+  records / moves the file onto the keeper" — a feature that was never built. The audit
+  *identifies* duplicate groups and suggests a keeper; no automated dedup command exists
+  (Colophon never deletes or merges records).
+
 ## [0.2.0] — 2026-06-04
 
 ### Added
@@ -70,8 +91,8 @@ Initial public release.
   only above a confidence threshold.
 - **Series audit** — compare series numbers against the provider's authoritative position
   and heal genuine mismatches (read-only by default).
-- **Dedup** — collapse duplicate records via attach-to-keeper (loser's file preserved as an
-  alternative format; empty record removed).
+- **Dedup (audit-only)** — the audit groups duplicate records and suggests a keeper; no
+  automated collapse (Colophon never deletes or merges records).
 - **Oversight** — weekly changelog review (oscillation + error-rate verdict) that emails
   only when flagged.
 - Precondition gate (files never touched), SQLite changelog with `revert`, dry-run default,
