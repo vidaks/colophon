@@ -10,6 +10,9 @@ the next timer fire retries.
 This module never raises for a phase or precondition failure: it captures the
 failure into the result so the caller can always render + send a report.
 """
+import os
+import shlex
+import subprocess
 import time
 
 from . import backfill, grimmory, series_audit
@@ -88,6 +91,31 @@ def _healed_count(res):
     series = res.get("series") or {}
     sa = series.get("healed", 0) + series.get("regrouped", 0)
     return bf + rs + sa
+
+
+def is_noteworthy(res):
+    """Whether a run is worth pushing. A clean no-op run (nothing changed, no error,
+    no new stuck book to surface) stays silent — so a frequent (e.g. hourly) schedule
+    does not spam. A crash (res is None) or a phase failure always surfaces."""
+    if res is None or not res.get("ok", True):
+        return True
+    return _healed_count(res) > 0 or bool(res.get("stuck"))
+
+
+def push(title, body):
+    """Send a notification through COLOPHON_NOTIFY_CMD — the command is invoked with
+    the title as its last argument and the body on stdin, so the deployment wires it
+    to whatever push channel it wants (e.g. an ntfy publisher) without colophon
+    knowing the channel. Best-effort; returns (ok, detail). No command set = no-op."""
+    cmd = os.environ.get("COLOPHON_NOTIFY_CMD")
+    if not cmd:
+        return False, "COLOPHON_NOTIFY_CMD unset"
+    try:
+        p = subprocess.run(shlex.split(cmd) + [title], input=body, text=True,
+                           capture_output=True, timeout=30)
+        return p.returncode == 0, (p.stderr.strip() or "ok")[:120]
+    except Exception as e:  # noqa: BLE001 — a notify failure must never break the sweep
+        return False, str(e)[:120]
 
 
 def subject(res):

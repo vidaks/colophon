@@ -11,7 +11,8 @@ from colophon import cli, maintain, oversight
 
 
 def _args(**kw):
-    d = {"limit": 20, "min_conf": 0.9, "apply": False, "force": False, "email": True}
+    d = {"limit": 20, "min_conf": 0.9, "apply": False, "force": False,
+         "email": True, "notify": False}
     d.update(kw)
     return argparse.Namespace(**d)
 
@@ -45,6 +46,55 @@ class CrashStillEmails(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             cli.cmd_maintain(_args(email=False), None, None)
         self.assertEqual(self.sent, [])
+
+
+class IsNoteworthy(unittest.TestCase):
+    """Only a run that changed something / errored / has a new stuck book pushes;
+    a clean no-op stays silent so a frequent schedule does not spam."""
+
+    def _res(self, **kw):
+        d = {"ok": True, "backfill": {"healed": 0}, "resolve": {"proposals": []},
+             "series": {"healed": 0, "regrouped": 0}, "stuck": []}
+        d.update(kw)
+        return d
+
+    def test_clean_noop_is_silent(self):
+        self.assertFalse(maintain.is_noteworthy(self._res()))
+
+    def test_crash_and_phase_failure_surface(self):
+        self.assertTrue(maintain.is_noteworthy(None))
+        self.assertTrue(maintain.is_noteworthy(self._res(ok=False)))
+
+    def test_change_or_stuck_surfaces(self):
+        self.assertTrue(maintain.is_noteworthy(self._res(series={"healed": 0, "regrouped": 3})))
+        self.assertTrue(maintain.is_noteworthy(self._res(backfill={"healed": 1})))
+        self.assertTrue(maintain.is_noteworthy(self._res(stuck=[{"book_id": 1}])))
+
+
+class ConditionalNotify(unittest.TestCase):
+    """--notify routes through push() and only fires on a noteworthy run."""
+
+    def setUp(self):
+        self.pushed = []
+        self._push, self._run = maintain.push, maintain.run_maintain
+        maintain.push = lambda subject, body: (self.pushed.append((subject, body)), (True, "stub"))[1]
+
+    def tearDown(self):
+        maintain.push, maintain.run_maintain = self._push, self._run
+
+    def test_notify_pushes_on_a_crash(self):
+        # A crash is noteworthy; --notify must push (and not silently swallow it).
+        maintain.run_maintain = _boom
+        with self.assertRaises(RuntimeError):
+            cli.cmd_maintain(_args(notify=True, email=False), None, None)
+        self.assertEqual(len(self.pushed), 1)
+        self.assertIn("[CRASH]", self.pushed[0][0])
+
+    def test_no_flags_pushes_nothing(self):
+        maintain.run_maintain = _boom
+        with self.assertRaises(RuntimeError):
+            cli.cmd_maintain(_args(notify=False, email=False), None, None)
+        self.assertEqual(self.pushed, [])
 
 
 if __name__ == "__main__":

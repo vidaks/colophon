@@ -235,15 +235,23 @@ def cmd_maintain(args, g, store):
         print(body)
         print(f"(report written to {path})")
     finally:
-        if args.email:
-            from . import oversight
-            subject = M.subject(res) if res else "Colophon daily [CRASH] — see host journal"
-            mail = body or ("Colophon maintain crashed before producing a summary.\n"
+        # --notify pushes a summary only on a NOTEWORTHY run (so a frequent, e.g.
+        # hourly, schedule stays quiet on a clean no-op) via COLOPHON_NOTIFY_CMD.
+        # --email always sends the SMTP heartbeat (the legacy nightly behaviour).
+        do_notify = args.notify and M.is_noteworthy(res)
+        if do_notify or args.email:
+            subject = M.subject(res) if res else "Colophon maintain [CRASH] — see host journal"
+            body = body or ("Colophon maintain crashed before producing a summary.\n"
                             "Check `journalctl -u colophon.service` on the host.\n")
-            ok, detail = oversight.send_email(subject, mail)
-            print(f"email: {detail}")
+            if do_notify:
+                ok, detail = M.push(subject, body)
+                print(f"notify: {detail}")
+            else:
+                from . import oversight
+                ok, detail = oversight.send_email(subject, body)
+                print(f"email: {detail}")
             # Surface each stuck book exactly once — only after it has actually been
-            # emailed, and only on a real (apply) run so dry-run testing doesn't
+            # delivered, and only on a real (apply) run so dry-run testing doesn't
             # consume the one-shot report. Silence thereafter = the human keeps it.
             if ok and args.apply and res and res.get("stuck"):
                 store.enrich_mark_reported([s["book_id"] for s in res["stuck"]])
@@ -312,6 +320,9 @@ def main(argv=None):
     mt.add_argument("--apply", action="store_true", help="actually write (default: dry-run)")
     mt.add_argument("--force", action="store_true", help="re-query cached-unresolvable mis-seeds this run")
     mt.add_argument("--email", action="store_true", help="always email the summary (a daily heartbeat)")
+    mt.add_argument("--notify", action="store_true",
+                    help="push the summary via COLOPHON_NOTIFY_CMD only on a noteworthy run "
+                         "(something changed / errored / a new stuck book) — quiet otherwise")
     ve = sub.add_parser("verify", help="acquisition gate: is a downloaded file the requested work? (read-only)")
     ve.add_argument("file", help="path to the downloaded book file")
     ve.add_argument("--hcid", help="requested Hardcover work id (primary anchor)")
