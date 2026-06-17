@@ -147,7 +147,8 @@ def render_summary(res):
     if sa:
         cats = sa["categories"]
         smis = len(cats.get("series-mismatch", []))
-        L.append(f"Series (numbering + grouping): {sa['total']} scanned · {sa['healed']} healed · "
+        L.append(f"Series (numbering + grouping): {sa['total']} scanned "
+                 f"({sa.get('cached', 0)} cached) · {sa['healed']} healed · "
                  f"{sa.get('regrouped', 0)} regrouped · {smis} series-mismatch → resolver · {sa['errors']} errors"
                  + ("  ABORTED (circuit-breaker)" if sa.get("errors", 0) >= series_audit.ABORT_ERRORS else ""))
         for k in ("number-mismatch", "number-missing", "series-name-missing", "series-name-variant"):

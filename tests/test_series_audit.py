@@ -4,6 +4,7 @@ Run: python -m unittest -v
 audit_one is pure once the Hardcover lookup is stubbed, so most coverage targets it
 directly. The grouping (series-name-missing) path is the new surface (Symptom 1).
 """
+import time
 import unittest
 
 from colophon import maintain, series_audit
@@ -186,6 +187,120 @@ class RunRegroup(unittest.TestCase):
         self.assertEqual(res["regrouped"], 1)
         self.assertEqual(g.calls, [([9], "REPLACE_MISSING")])
         self.assertTrue(res["categories"]["series-name-missing"][0]["applied"])
+
+
+class _FakeStore:
+    """Minimal store exposing just the verdict-cache surface run() touches."""
+
+    def __init__(self, cache=None):
+        self.cache = dict(cache or {})  # book_id -> (fingerprint, verdict, expires_at)
+        self.puts, self.deletes = [], []
+
+    def series_verdict_map(self):
+        return dict(self.cache)
+
+    def series_verdict_put(self, book_id, fingerprint, verdict, expires_at):
+        self.puts.append((book_id, fingerprint, verdict))
+        self.cache[book_id] = (fingerprint, verdict, expires_at)
+
+    def series_verdict_delete(self, book_id):
+        self.deletes.append(book_id)
+        self.cache.pop(book_id, None)
+
+    def series_verdict_prune(self, before=None):
+        return 0
+
+    def new_run_id(self):
+        return "run-test"
+
+
+class VerdictCache(unittest.TestCase):
+    """A settled verdict is cached and then re-used without re-querying Hardcover,
+    unless the identity changed, the entry expired, --force, or the book is a dup."""
+
+    def setUp(self):
+        self._db, self._lookup = series_audit.grimmory._db, series_audit.audit._book_by_id
+        self.lookups = []
+
+        def fake_db(sql):
+            if "series_name IS NULL OR" in sql:  # no ungrouped books
+                return ""
+            # one in-series book that is correct → number-ok (cacheable)
+            return "9\tDune 5\t100\tDune\t5\t9780441013593\t0\t0"
+
+        def counting_lookup(hcid):
+            self.lookups.append(hcid)
+            return {"series": "Dune", "position": 5, "isbn": "9780441013593", "title": "Dune"}
+
+        series_audit.grimmory._db = fake_db
+        series_audit.audit._book_by_id = counting_lookup
+
+    def tearDown(self):
+        series_audit.grimmory._db, series_audit.audit._book_by_id = self._db, self._lookup
+
+    def _fp(self):
+        return series_audit._fingerprint(
+            {"hcid": "100", "isbn": "9780441013593", "series_name": "Dune", "series_number": "5"})
+
+    def test_miss_caches_then_hit_skips_the_lookup(self):
+        store = _FakeStore()
+        r1 = series_audit.run(store=store)
+        self.assertEqual(len(self.lookups), 1)
+        self.assertEqual(r1["cached"], 0)
+        self.assertEqual([p[2] for p in store.puts], ["number-ok"])
+
+        self.lookups.clear()
+        r2 = series_audit.run(store=store)
+        self.assertEqual(self.lookups, [])        # cache hit — no Hardcover query
+        self.assertEqual(r2["cached"], 1)
+        self.assertEqual(len(r2["categories"]["number-ok"]), 1)
+
+    def test_force_bypasses_the_cache(self):
+        store = _FakeStore({9: (self._fp(), "number-ok", time.time() + 1e6)})
+        series_audit.run(store=store, force=True)
+        self.assertEqual(len(self.lookups), 1)    # re-queried despite a fresh entry
+
+    def test_expired_entry_is_requeried(self):
+        store = _FakeStore({9: (self._fp(), "number-ok", time.time() - 1)})
+        series_audit.run(store=store)
+        self.assertEqual(len(self.lookups), 1)
+
+    def test_changed_identity_is_requeried(self):
+        store = _FakeStore({9: ("stale-fingerprint", "number-ok", time.time() + 1e6)})
+        series_audit.run(store=store)
+        self.assertEqual(len(self.lookups), 1)
+        self.assertEqual(store.deletes, [])       # overwritten by a fresh put, not deleted
+
+
+class VerdictCacheDuplicates(unittest.TestCase):
+    """A shared-hcid book is never cache-skipped: dup-overlap is cross-book."""
+
+    def setUp(self):
+        self._db, self._lookup = series_audit.grimmory._db, series_audit.audit._book_by_id
+        self.lookups = []
+
+        def fake_db(sql):
+            if "series_name IS NULL OR" in sql:
+                return ""
+            return ("9\tDune 5\t100\tDune\t5\t9780441013593\t0\t0\n"
+                    "10\tDune 5 dup\t100\tDune\t5\t9780441013593\t0\t0")  # same hcid 100
+
+        def counting_lookup(hcid):
+            self.lookups.append(hcid)
+            return {"series": "Dune", "position": 5, "isbn": "9780441013593", "title": "Dune"}
+
+        series_audit.grimmory._db = fake_db
+        series_audit.audit._book_by_id = counting_lookup
+
+    def tearDown(self):
+        series_audit.grimmory._db, series_audit.audit._book_by_id = self._db, self._lookup
+
+    def test_duplicate_hcid_is_dup_overlap_and_not_cached(self):
+        store = _FakeStore()
+        res = series_audit.run(store=store)
+        self.assertEqual(len(res["categories"]["dup-overlap"]), 2)
+        self.assertEqual(store.puts, [])          # dup-overlap is never cached
+        self.assertEqual(self.lookups, [])        # dup is decided before any lookup
 
 
 class MaintainSeriesPhase(unittest.TestCase):

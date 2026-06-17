@@ -41,6 +41,8 @@ Broken-ISBN books are left to the backfill phase. A *disagreeing* name
 (series-mismatch) is still deferred to the resolver: the disagreement is itself
 evidence the hcid may be wrong, so it needs adjudication before a lock.
 """
+import os
+import random
 import re
 import time
 from collections import defaultdict
@@ -58,6 +60,15 @@ UNGROUPED_LIMIT = 250
 # Fix marker: re-derive the series via a plain REPLACE_MISSING refresh of the book's
 # existing identity (no ISBN swap), for ungrouped books we can't or needn't re-ISBN.
 REFRESH_MISSING = "refresh-missing"
+
+# Verdict cache: settled (non-actionable) verdicts are cached so the sweep stops
+# re-querying Hardcover for unchanged books — which is what lets the schedule run
+# far more often than nightly. The TTL is jittered per entry (expiry in [TTL, 2*TTL])
+# so a bulk-populated cache expires as a trickle, never all on one run. Only verdicts
+# with no cross-book dependency are cached (dup-overlap is excluded — it is decided
+# from the shared-hcid count, which a different book can change).
+SERIES_VERDICT_TTL_DAYS = float(os.environ.get("COLOPHON_SERIES_VERDICT_TTL_DAYS", "14"))
+_CACHEABLE = {"number-ok", "no-series", "no-position", "no-hcid"}
 
 _SQL = (
     "SELECT bm.book_id, IFNULL(bm.title,''), IFNULL(bm.hardcover_book_id,''), "
@@ -121,6 +132,23 @@ def _as_float(s):
 
 def _isbn_digits(s):
     return re.sub(r"\D", "", s or "")
+
+
+def _fingerprint(b):
+    """The book identity a cached verdict depends on. A change to any part (a heal,
+    a regroup, a manual edit) no longer matches the cached entry, re-opening the book.
+    The cacheable verdicts (number-ok / no-series / no-position / no-hcid) turn only on
+    these fields — none reads the title — so this is a complete invalidation key."""
+    return "|".join((
+        (b["hcid"] or ""), _isbn_digits(b["isbn"]),
+        (b["series_name"] or "").strip().lower(), str(b["series_number"] or "").strip()))
+
+
+def _verdict_expiry():
+    """A jittered epoch in [TTL/2, TTL] — TTL is the strict max age, the jitter only
+    pulls expiries earlier so a bulk-cached set never all expires on one run."""
+    base = SERIES_VERDICT_TTL_DAYS * 86400.0
+    return time.time() + base - random.uniform(0.0, base / 2.0)
 
 
 def audit_one(b, hcid_counts):
@@ -193,7 +221,7 @@ def audit_one(b, hcid_counts):
     return cat, reason, fix
 
 
-def run(limit=None, apply=False, g=None, store=None, ungrouped_limit=None):
+def run(limit=None, apply=False, g=None, store=None, ungrouped_limit=None, force=False):
     books = _series_books()
     if limit:
         books = books[:limit]
@@ -207,10 +235,25 @@ def run(limit=None, apply=False, g=None, store=None, ungrouped_limit=None):
     if apply:
         assert_preconditions(g)
     run_id = (store.new_run_id() + "-seriesnum") if (apply and store) else None
+    # Skip the Hardcover lookup for books whose settled verdict is cached, still fresh,
+    # and identity-unchanged (--force bypasses). A currently shared-hcid book is never
+    # cache-skipped: dup-overlap is cross-book and must be re-decided each run.
+    verdict_cache = {} if (force or store is None) else store.series_verdict_map()
+    now = time.time()
     cats = defaultdict(list)
-    healed, regrouped, errors = 0, 0, 0
+    healed, regrouped, errors, cached_hits = 0, 0, 0, 0
     regroup = []  # (rec, book_id) — re-derived together via one batched refresh
     for b in sorted(books, key=lambda x: (x["series_name"], _as_float(x["series_number"]) or 0)):
+        fp = _fingerprint(b)
+        hit = verdict_cache.get(b["book_id"])
+        # A book that shares its hcid with another (dup-overlap) is cross-book and must
+        # be re-decided every run; no-hcid books aren't counted, so they stay cacheable.
+        unique_hcid = not b["hcid"] or hcid_counts.get(b["hcid"], 0) <= 1
+        if hit and hit[0] == fp and hit[2] > now and unique_hcid:
+            cats[hit[1]].append({"book": b, "reason": "cached — settled, not re-queried",
+                                 "fix": None, "applied": False, "cached": True})
+            cached_hits += 1
+            continue
         cat, reason, fix = audit_one(b, hcid_counts)
         rec = {"book": b, "reason": reason, "fix": fix, "applied": False}
         if apply and fix and fix[0] == REFRESH_MISSING:
@@ -228,6 +271,12 @@ def run(limit=None, apply=False, g=None, store=None, ungrouped_limit=None):
                     rec["aborted"] = True
                     cats[cat].append(rec)
                     break
+        # Cache a settled, non-actionable verdict; drop any stale entry otherwise.
+        if store:
+            if fix is None and cat in _CACHEABLE:
+                store.series_verdict_put(b["book_id"], fp, cat, _verdict_expiry())
+            elif hit:
+                store.series_verdict_delete(b["book_id"])
         cats[cat].append(rec)
     # One batched REPLACE_MISSING refresh re-derives the series for the ungrouped
     # books that need no ISBN swap; grimmory throttles its own Hardcover calls, and
@@ -242,8 +291,11 @@ def run(limit=None, apply=False, g=None, store=None, ungrouped_limit=None):
             for rec, _ in regroup:
                 rec["apply_error"] = str(e)[:100]
             errors += 1
+    if store:
+        store.series_verdict_prune()  # drop expired rows (incl. orphans of deleted books)
     return {"total": len(books), "categories": cats, "run_id": run_id,
-            "healed": healed, "regrouped": regrouped, "errors": errors, "apply": apply}
+            "healed": healed, "regrouped": regrouped, "errors": errors,
+            "cached": cached_hits, "apply": apply}
 
 
 _ORDER = ["number-mismatch", "number-missing", "series-name-missing", "series-name-variant",
@@ -262,8 +314,10 @@ _LABEL = {"number-mismatch": "Wrong number (heal-fixable)",
 
 def render(res):
     cats = res["categories"]
+    cached = res.get("cached", 0)
+    cached_note = f" ({cached} from cache, not re-queried)" if cached else ""
     L = [f"# Colophon series-numbering audit — {time.strftime('%Y-%m-%d %H:%M')}",
-         f"\n**{res['total']}** books in a series scanned. "
+         f"\n**{res['total']}** books in a series scanned{cached_note}. "
          + (f"**{res['healed']}** healed, **{res.get('regrouped', 0)}** regrouped, **{res['errors']}** errors."
             if res["apply"] else "Read-only — nothing changed.") + "\n",
          "## Summary\n"]

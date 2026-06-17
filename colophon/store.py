@@ -76,6 +76,22 @@ class Store:
                     reported INTEGER NOT NULL DEFAULT 0
                 )"""
             )
+            # Settled, non-actionable series-audit verdicts (correct / standalone /
+            # no-position), cached so the nightly sweep stops re-querying Hardcover for
+            # books that aren't going to change. `fingerprint` is the book identity the
+            # verdict depends on (hcid + isbn + series name/number) — if it changes the
+            # entry no longer matches and the book is re-queried. `expires_at` is a
+            # per-entry JITTERED epoch so a bulk-populated cache expires as a trickle,
+            # not all on one night (no nightly thundering herd).
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS series_verdict(
+                    book_id INTEGER PRIMARY KEY,
+                    fingerprint TEXT NOT NULL,
+                    verdict TEXT NOT NULL,
+                    cached_at TEXT NOT NULL,
+                    expires_at REAL NOT NULL
+                )"""
+            )
 
     def epoch(self):
         """Re-audit epoch. Settled (locked) books are only re-opened when this is
@@ -206,6 +222,38 @@ class Store:
             return c.executemany(
                 "UPDATE enrich_state SET reported=1 WHERE book_id=?",
                 [(int(b),) for b in book_ids]).rowcount
+
+    # --- series-audit verdict cache (don't re-query settled, unchanged books) ---
+
+    def series_verdict_map(self):
+        """All cached verdicts as {book_id: (fingerprint, verdict, expires_at)}."""
+        with self._conn() as c:
+            return {r["book_id"]: (r["fingerprint"], r["verdict"], r["expires_at"])
+                    for r in c.execute(
+                        "SELECT book_id, fingerprint, verdict, expires_at FROM series_verdict")}
+
+    def series_verdict_put(self, book_id, fingerprint, verdict, expires_at):
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO series_verdict(book_id,fingerprint,verdict,cached_at,expires_at) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(book_id) DO UPDATE SET "
+                "fingerprint=excluded.fingerprint, verdict=excluded.verdict, "
+                "cached_at=excluded.cached_at, expires_at=excluded.expires_at",
+                (int(book_id), fingerprint, verdict, now, float(expires_at)),
+            )
+
+    def series_verdict_delete(self, book_id):
+        """Drop one cached verdict (a book that is no longer settled). Returns rows removed."""
+        with self._conn() as c:
+            return c.execute("DELETE FROM series_verdict WHERE book_id=?", (int(book_id),)).rowcount
+
+    def series_verdict_prune(self, before=None):
+        """Drop entries expired before `before` (default: now). Bounds the table so a
+        deleted book's row, which the survey will never revisit, can't linger forever."""
+        cutoff = time.time() if before is None else float(before)
+        with self._conn() as c:
+            return c.execute("DELETE FROM series_verdict WHERE expires_at < ?", (cutoff,)).rowcount
 
     @staticmethod
     def loads(row, field):

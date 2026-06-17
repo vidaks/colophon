@@ -190,7 +190,7 @@ def cmd_resolve(args, g, store):
 def cmd_series_audit(args, g, store):
     from .series_audit import render, run as series_run
     try:
-        res = series_run(limit=args.limit, apply=args.apply, g=g, store=store)
+        res = series_run(limit=args.limit, apply=args.apply, g=g, store=store, force=args.force)
     except PreconditionError as e:
         print(e)
         return 2
@@ -301,6 +301,8 @@ def main(argv=None):
     sn.add_argument("--limit", type=int, default=None)
     sn.add_argument("--apply", action="store_true",
                     help="heal clean number-mismatch / number-missing / series-name-missing (reuses the heal path)")
+    sn.add_argument("--force", action="store_true",
+                    help="ignore the verdict cache — re-query Hardcover for every book")
     ov = sub.add_parser("oversight", help="Phase 4b — weekly changelog oversight + verdict (emails only if flagged)")
     ov.add_argument("--days", type=int, default=7)
     ov.add_argument("--email", action="store_true", help="email the digest only when flagged (DRIFT/REVIEW)")
