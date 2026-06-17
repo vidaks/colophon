@@ -44,14 +44,22 @@ class AuditOne(unittest.TestCase):
         self.assertEqual(cat, "no-series")
         self.assertIsNone(fix)
 
-    def test_ungrouped_already_canonical_not_reheal(self):
-        # Same ISBN as Hardcover's canonical → re-heal would not change identity;
-        # leave it (a grimmory derivation gap, not ours to churn on).
+    def test_ungrouped_already_canonical_refreshes_to_rederive(self):
+        # Same ISBN as Hardcover's canonical → no ISBN swap to make, but Hardcover
+        # DOES place it in a series, so a plain REPLACE_MISSING refresh re-derives it.
         _stub_lookup({"100": {"series": "Dune", "position": 1, "isbn": "9780441013593"}})
         cat, reason, fix = series_audit.audit_one(_row(isbn="978-0-441-01359-3"), {})
         self.assertEqual(cat, "series-name-missing")
-        self.assertIsNone(fix)
-        self.assertIn("already on canonical", reason)
+        self.assertEqual(fix, (series_audit.REFRESH_MISSING, "100"))
+        self.assertIn("refresh to re-derive", reason)
+
+    def test_ungrouped_no_canonical_isbn_refreshes_to_rederive(self):
+        # Hardcover has the series but exposes no canonical ISBN to swap to → the
+        # book's existing ISBN still re-derives the series on a REPLACE_MISSING refresh.
+        _stub_lookup({"100": {"series": "Dune", "position": 1, "isbn": None}})
+        cat, reason, fix = series_audit.audit_one(_row(isbn="9788424117788"), {})
+        self.assertEqual(cat, "series-name-missing")
+        self.assertEqual(fix, (series_audit.REFRESH_MISSING, "100"))
 
     def test_ungrouped_name_locked_not_healed(self):
         _stub_lookup({"100": {"series": "Dune", "position": 1, "isbn": "9780441013593"}})
@@ -132,6 +140,52 @@ class RunSurvey(unittest.TestCase):
         recs = res["categories"]["series-name-missing"]
         self.assertEqual(len(recs), 1)
         self.assertEqual(recs[0]["fix"], ("9780553293357", "200"))
+
+
+class RunRegroup(unittest.TestCase):
+    """An ungrouped book that needs no ISBN swap is re-derived via one batched
+    REPLACE_MISSING refresh — never the ISBN-swap heal path."""
+
+    def setUp(self):
+        self._db = series_audit.grimmory._db
+        self._lookup = series_audit.audit._book_by_id
+        self._precond = series_audit.assert_preconditions
+        series_audit.assert_preconditions = lambda g: None
+
+        def fake_db(sql):
+            if "series_name IS NULL OR" in sql:  # ungrouped book 9, already on canonical ISBN
+                return "9\tThe Ungrouped One\t200\t9780553293357\t0"
+            return ""
+
+        series_audit.grimmory._db = fake_db
+        _stub_lookup({"200": {"series": "Foundation", "position": 3, "isbn": "9780553293357"}})
+
+    def tearDown(self):
+        series_audit.grimmory._db = self._db
+        series_audit.audit._book_by_id = self._lookup
+        series_audit.assert_preconditions = self._precond
+
+    def test_dry_run_flags_refresh_missing_but_calls_nothing(self):
+        res = series_audit.run(apply=False)
+        rec = res["categories"]["series-name-missing"][0]
+        self.assertEqual(rec["fix"], (series_audit.REFRESH_MISSING, "200"))
+        self.assertFalse(rec["applied"])
+        self.assertEqual(res["regrouped"], 0)
+
+    def test_apply_batches_one_replace_missing_refresh(self):
+        class FakeGrimmory:
+            def __init__(self):
+                self.calls = []
+
+            def refresh(self, ids, refresh_covers=True, replace_mode="REPLACE_ALL"):
+                self.calls.append((list(ids), replace_mode))
+                return "ok"
+
+        g = FakeGrimmory()
+        res = series_audit.run(apply=True, g=g, store=None)
+        self.assertEqual(res["regrouped"], 1)
+        self.assertEqual(g.calls, [([9], "REPLACE_MISSING")])
+        self.assertTrue(res["categories"]["series-name-missing"][0]["applied"])
 
 
 class MaintainSeriesPhase(unittest.TestCase):

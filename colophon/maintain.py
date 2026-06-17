@@ -85,7 +85,8 @@ def verdict(res):
 def _healed_count(res):
     bf = (res["backfill"] or {}).get("healed", 0)
     rs = sum(1 for p in (res["resolve"] or {}).get("proposals", []) if p.get("applied"))
-    sa = (res.get("series") or {}).get("healed", 0)
+    series = res.get("series") or {}
+    sa = series.get("healed", 0) + series.get("regrouped", 0)
     return bf + rs + sa
 
 
@@ -147,7 +148,7 @@ def render_summary(res):
         cats = sa["categories"]
         smis = len(cats.get("series-mismatch", []))
         L.append(f"Series (numbering + grouping): {sa['total']} scanned · {sa['healed']} healed · "
-                 f"{smis} series-mismatch → resolver · {sa['errors']} errors"
+                 f"{sa.get('regrouped', 0)} regrouped · {smis} series-mismatch → resolver · {sa['errors']} errors"
                  + ("  ABORTED (circuit-breaker)" if sa.get("errors", 0) >= series_audit.ABORT_ERRORS else ""))
         for k in ("number-mismatch", "number-missing", "series-name-missing", "series-name-variant"):
             for rec in cats.get(k, []):

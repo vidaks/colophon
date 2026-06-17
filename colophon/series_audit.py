@@ -27,14 +27,19 @@ Categories:
   number-ok           : grimmory number == Hardcover position
 
 The `series-name-missing` path (Symptom 1 — owned books that fall out of their
-series because grimmory never derived a `series_name`) reuses the exact heal
-recipe: set the canonical ISBN + hcid, lock, refresh, and grimmory repopulates
-BOTH series_name and series_number. It heals only books on a *non-canonical*
-13-char edition (current ISBN != Hardcover's canonical) — books already on the
-canonical edition with a null name are a grimmory-side derivation gap, not ours
-to churn on. Broken-ISBN books are left to the backfill phase. A *disagreeing*
-name (series-mismatch) is still deferred to the resolver: the disagreement is
-itself evidence the hcid may be wrong, so it needs adjudication before a lock.
+series because grimmory never derived a `series_name`) heals two ways. When the
+book sits on a *non-canonical* 13-char edition (current ISBN != Hardcover's
+canonical), the ISBN-swap heal runs: set the canonical ISBN + hcid, lock, refresh,
+and grimmory repopulates BOTH series_name and series_number. When there is no
+canonical ISBN to swap to, or the book is already on it, a plain `REPLACE_MISSING`
+refresh of the existing identity runs instead — grimmory re-derives the series
+from the edition it already has (verified: a book whose ISBN matches a Hardcover
+record with a `featured_book_series` re-derives the name on refresh), with no
+ISBN swap and no field clobbering (REPLACE_MISSING fills only empty fields).
+Standalones (no Hardcover series) fall into `no-series` and are never refreshed.
+Broken-ISBN books are left to the backfill phase. A *disagreeing* name
+(series-mismatch) is still deferred to the resolver: the disagreement is itself
+evidence the hcid may be wrong, so it needs adjudication before a lock.
 """
 import re
 import time
@@ -44,7 +49,15 @@ from . import audit, grimmory, hardcover, matcher
 from .heal import assert_preconditions, heal_book
 
 ABORT_ERRORS = 3
-UNGROUPED_LIMIT = 60  # per-run cap on the ungrouped (null series_name) survey
+# Per-run cap on the ungrouped (null series_name) survey. Sized to cover the whole
+# personal-scale library each run (the actual lookup cost scales with the real
+# ungrouped count, not the cap); RAND() below still rotates coverage if a library
+# ever grows past it. A verdict cache for known-standalone books would avoid the
+# nightly re-lookup of the genuine-standalone tail — deferred until it matters.
+UNGROUPED_LIMIT = 250
+# Fix marker: re-derive the series via a plain REPLACE_MISSING refresh of the book's
+# existing identity (no ISBN swap), for ungrouped books we can't or needn't re-ISBN.
+REFRESH_MISSING = "refresh-missing"
 
 _SQL = (
     "SELECT bm.book_id, IFNULL(bm.title,''), IFNULL(bm.hardcover_book_id,''), "
@@ -64,7 +77,9 @@ _UNGROUPED_SQL = (
     "AND bm.hardcover_book_id IS NOT NULL AND bm.hardcover_book_id<>'' "
     "AND (bm.series_name IS NULL OR bm.series_name='') "
     "AND bm.isbn_13 IS NOT NULL AND LENGTH(REPLACE(bm.isbn_13,'-',''))=13 "
-    "ORDER BY bm.book_id LIMIT {limit};"
+    # RAND() so a residual set of stuck/standalone ungrouped books can't permanently
+    # monopolise the per-run cap and starve newly-ungrouped books of a survey slot.
+    "ORDER BY RAND() LIMIT {limit};"
 )
 
 
@@ -127,11 +142,13 @@ def audit_one(b, hcid_counts):
         if b.get("name_locked"):
             return "series-name-missing", f"ungrouped from {hc_series!r} (series_name LOCKED — manual)", None
         if not hc_isbn:
-            return "series-name-missing", f"ungrouped from {hc_series!r} — no canonical ISBN to heal", None
+            return ("series-name-missing",
+                    f"ungrouped from {hc_series!r} — no canonical ISBN; refresh to re-derive",
+                    (REFRESH_MISSING, hcid))
         if _isbn_digits(b["isbn"]) == _isbn_digits(hc_isbn):
             return ("series-name-missing",
-                    f"ungrouped from {hc_series!r}; already on canonical ISBN — grimmory derived no series (leave)",
-                    None)
+                    f"ungrouped from {hc_series!r}; already on canonical ISBN — refresh to re-derive",
+                    (REFRESH_MISSING, hcid))
         pos = "" if hc_pos is None else f" #{float(hc_pos):g}"
         return "series-name-missing", f"ungrouped → series {hc_series!r}{pos}", (hc_isbn, hcid)
     if hc_series and not matcher._title_match(b["series_name"], hc_series):
@@ -191,12 +208,15 @@ def run(limit=None, apply=False, g=None, store=None, ungrouped_limit=None):
         assert_preconditions(g)
     run_id = (store.new_run_id() + "-seriesnum") if (apply and store) else None
     cats = defaultdict(list)
-    healed, errors = 0, 0
+    healed, regrouped, errors = 0, 0, 0
+    regroup = []  # (rec, book_id) — re-derived together via one batched refresh
     for b in sorted(books, key=lambda x: (x["series_name"], _as_float(x["series_number"]) or 0)):
         cat, reason, fix = audit_one(b, hcid_counts)
         rec = {"book": b, "reason": reason, "fix": fix, "applied": False}
-        if apply and fix and cat in ("number-mismatch", "number-missing",
-                                     "series-name-missing", "series-name-variant"):
+        if apply and fix and fix[0] == REFRESH_MISSING:
+            regroup.append((rec, b["book_id"]))
+        elif apply and fix and cat in ("number-mismatch", "number-missing",
+                                       "series-name-missing", "series-name-variant"):
             try:
                 heal_book(g, store, run_id, b["book_id"], fix[0], fix[1], None, dry_run=False)
                 rec["applied"] = True
@@ -209,8 +229,21 @@ def run(limit=None, apply=False, g=None, store=None, ungrouped_limit=None):
                     cats[cat].append(rec)
                     break
         cats[cat].append(rec)
+    # One batched REPLACE_MISSING refresh re-derives the series for the ungrouped
+    # books that need no ISBN swap; grimmory throttles its own Hardcover calls, and
+    # REPLACE_MISSING fills only empty fields so it can't clobber existing metadata.
+    if apply and regroup:
+        try:
+            g.refresh([bid for _, bid in regroup], refresh_covers=False, replace_mode="REPLACE_MISSING")
+            for rec, _ in regroup:
+                rec["applied"] = True
+            regrouped = len(regroup)
+        except Exception as e:  # noqa: BLE001 — log; the heal work already happened
+            for rec, _ in regroup:
+                rec["apply_error"] = str(e)[:100]
+            errors += 1
     return {"total": len(books), "categories": cats, "run_id": run_id,
-            "healed": healed, "errors": errors, "apply": apply}
+            "healed": healed, "regrouped": regrouped, "errors": errors, "apply": apply}
 
 
 _ORDER = ["number-mismatch", "number-missing", "series-name-missing", "series-name-variant",
@@ -231,7 +264,7 @@ def render(res):
     cats = res["categories"]
     L = [f"# Colophon series-numbering audit — {time.strftime('%Y-%m-%d %H:%M')}",
          f"\n**{res['total']}** books in a series scanned. "
-         + (f"**{res['healed']}** healed, **{res['errors']}** errors."
+         + (f"**{res['healed']}** healed, **{res.get('regrouped', 0)}** regrouped, **{res['errors']}** errors."
             if res["apply"] else "Read-only — nothing changed.") + "\n",
          "## Summary\n"]
     for k in _ORDER:
@@ -245,7 +278,7 @@ def render(res):
             b = rec["book"]
             tag = ""
             if rec.get("applied"):
-                tag = "  [✓ HEALED]"
+                tag = "  [✓ REGROUPED]" if (rec["fix"] and rec["fix"][0] == REFRESH_MISSING) else "  [✓ HEALED]"
             elif rec.get("apply_error"):
                 tag = f"  [apply-FAILED: {rec['apply_error']}]"
             L.append(f"- `{b['book_id']}` {b['series_name']}#{b['series_number'] or '—'} "
