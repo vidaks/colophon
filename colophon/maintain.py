@@ -212,12 +212,17 @@ def render_summary(res):
     manual = res.get("manual") or []
     if manual:
         L.append("")
-        L.append(f"Unfixable — delete / re-download ({len(manual)}): identified books whose "
-                 "series metadata can't be auto-fixed (a corrupt name, or a parent/sub-series "
-                 "the tool won't move). Listed here ONCE; your call.")
+        L.append(f"Series names to fix ({len(manual)}) — colophon flagged these but can't rename "
+                 "them automatically (the book is already on its canonical edition). Apply the "
+                 "rename in grimmory's metadata editor, or delete + re-download. Shown ONCE.")
         for m in manual:
-            num = f"#{m['series_number']}" if m.get("series_number") else ""
-            L.append(f"  ? book {m['book_id']} {m['title']!r} [{(m.get('series_name') or '—')}{num}] — {m['reason']}")
+            L.append(f"  • book {m['book_id']} {m['title']!r}")
+            if m.get("rename_to"):
+                L.append(f"      series name is wrong — rename:  "
+                         f"{(m.get('series_name') or '—')!r}  →  {m['rename_to']!r}")
+            else:
+                num = f"#{m['series_number']}" if m.get("series_number") else ""
+                L.append(f"      [{(m.get('series_name') or '—')}{num}] — {m['reason']}")
             if m.get("url"):
                 L.append(f"      {m['url']}")
 

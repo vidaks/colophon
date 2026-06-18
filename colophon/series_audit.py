@@ -181,6 +181,25 @@ def _matching_membership(cand, series_name):
     return None
 
 
+def _rename_target(b):
+    """The exact series name a surfaced (manual) book should be renamed TO, so the digest
+    can give a verbatim 'rename FROM → TO' instruction instead of prose. Mirrors audit_one's
+    two manual branches: a name that only NORMALIZES to a real membership renames to that
+    membership's canonical spelling (the corrupt-form case); an unhealable variant renames
+    to the FEATURED series. Reuses the in-process Hardcover cache (audit._book_by_id), so it
+    adds no query. None if it can't be determined — the caller falls back to the reason."""
+    if not b["hcid"]:
+        return None
+    cand = audit._book_by_id(b["hcid"])
+    if not cand or isinstance(cand, tuple):
+        return None
+    member = _matching_membership(cand, b["series_name"])
+    if member:
+        return (member.get("series") or "").strip() or None
+    hc_series, _ = _resolve_membership(cand)
+    return (hc_series or "").strip() or None
+
+
 def audit_one(b, hcid_counts):
     """Return (category, reason, fix|None). fix = (isbn, hcid) to heal, when applicable."""
     hcid = b["hcid"]
@@ -344,7 +363,7 @@ def run(limit=None, apply=False, g=None, store=None, ungrouped_limit=None, force
     manual_recs += [r for r in cats.get("series-name-variant", []) if r["fix"] is None]
     manual = [{"book_id": r["book"]["book_id"], "title": r["book"]["title"],
                "series_name": r["book"]["series_name"], "series_number": r["book"]["series_number"],
-               "reason": r["reason"]} for r in manual_recs]
+               "reason": r["reason"], "rename_to": _rename_target(r["book"])} for r in manual_recs]
     if apply and store is not None and not limit:
         unreported = set(store.series_manual_observe(
             [(r["book"]["book_id"], _fingerprint(r["book"])) for r in manual_recs]))

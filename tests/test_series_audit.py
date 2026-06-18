@@ -129,6 +129,16 @@ class AuditOne(unittest.TestCase):
         self.assertEqual(cat, "manual")
         self.assertIsNone(fix)
         self.assertIn("re-download", reason)
+        # The digest needs a verbatim rename target: a corrupt name renames to the
+        # canonical spelling of the membership it normalizes to (not the featured series).
+        self.assertEqual(series_audit._rename_target(b), "Old Man's War")
+
+    def test_rename_target_variant_points_at_featured(self):
+        # An unhealable variant (on canonical, title matches) renames to the FEATURED series.
+        _stub_lookup({"100": {"title": "The Way of Kings", "series": "The Stormlight Archive",
+                              "position": 1, "isbn": "9780765326355"}})
+        b = _row(title="The Way of Kings", series_name="Cosmere Saga", isbn="9780765326355")
+        self.assertEqual(series_audit._rename_target(b), "The Stormlight Archive")
 
     def test_number_ok(self):
         _stub_lookup({"100": {"series": "Dune", "position": 5, "isbn": "9780441013593"}})
@@ -386,6 +396,32 @@ class MaintainSeriesPhase(unittest.TestCase):
         # The earlier phases still ran — one failure must not skip the rest.
         self.assertIsNotNone(res["backfill"])
         self.assertIsNotNone(res["resolve"])
+
+
+class ManualRenderInstruction(unittest.TestCase):
+    """A surfaced book renders as a verbatim, actionable 'rename FROM → TO' line — not
+    prose — so the notification tells the user exactly what to change in grimmory."""
+
+    def _res(self, manual):
+        return {"ts": "now", "apply": True, "ok": True, "aborted": False, "errors": [],
+                "backfill": None, "resolve": None, "series": None, "stuck": [], "manual": manual}
+
+    def test_rename_instruction_is_explicit(self):
+        out = maintain.render_summary(self._res([
+            {"book_id": 605, "title": "Evil is a Matter of Perspective",
+             "series_name": "Evil is a Matter of Perspective", "series_number": "1",
+             "reason": "variant ...", "rename_to": "Tales of the Apt",
+             "url": "https://books.akselsen.net/book/605"}]))
+        self.assertIn("book 605", out)
+        # FROM and TO both present, connected by the arrow, on the rename line.
+        self.assertRegex(out, r"rename:.*Evil is a Matter of Perspective.*→.*Tales of the Apt")
+        self.assertIn("https://books.akselsen.net/book/605", out)
+
+    def test_falls_back_to_reason_without_a_target(self):
+        out = maintain.render_summary(self._res([
+            {"book_id": 9, "title": "T", "series_name": "X", "series_number": "",
+             "reason": "no clean target available", "rename_to": None}]))
+        self.assertIn("no clean target available", out)
 
 
 if __name__ == "__main__":
