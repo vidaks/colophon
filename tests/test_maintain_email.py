@@ -54,7 +54,7 @@ class IsNoteworthy(unittest.TestCase):
 
     def _res(self, **kw):
         d = {"ok": True, "backfill": {"healed": 0}, "resolve": {"proposals": []},
-             "series": {"healed": 0, "regrouped": 0}, "stuck": []}
+             "series": {"healed": 0, "regrouped": 0}, "stuck": [], "manual": []}
         d.update(kw)
         return d
 
@@ -65,9 +65,13 @@ class IsNoteworthy(unittest.TestCase):
         self.assertTrue(maintain.is_noteworthy(None))
         self.assertTrue(maintain.is_noteworthy(self._res(ok=False)))
 
-    def test_change_or_stuck_surfaces(self):
-        self.assertTrue(maintain.is_noteworthy(self._res(series={"healed": 0, "regrouped": 3})))
-        self.assertTrue(maintain.is_noteworthy(self._res(backfill={"healed": 1})))
+    def test_routine_changes_stay_silent(self):
+        # Heals/regroups are trusted — no push (you notice a wrong change yourself).
+        self.assertFalse(maintain.is_noteworthy(self._res(series={"healed": 5, "regrouped": 3})))
+        self.assertFalse(maintain.is_noteworthy(self._res(backfill={"healed": 2})))
+
+    def test_unfixable_or_stuck_surfaces(self):
+        self.assertTrue(maintain.is_noteworthy(self._res(manual=[{"book_id": 1}])))
         self.assertTrue(maintain.is_noteworthy(self._res(stuck=[{"book_id": 1}])))
 
 

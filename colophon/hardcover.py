@@ -89,13 +89,15 @@ def book_by_id(hcid):
         "canonical_id": b.get("canonical_id"),
         # Default series/position is the lowest-position membership (back-compat for
         # callers that don't care which series). `featured` is the one grimmory derives
-        # on refresh — a book in several series (an Expanse novella in both the
-        # publication and chronological orderings) has a different position in each, so
-        # the series audit compares against featured, not the lowest.
+        # on refresh; `memberships` is every series the book is in, so the audit can tell
+        # a valid alternate grouping (the user picking "Old Man's War" over the featured
+        # "The Human Division") from a name that is no real series at all.
         "series": bs[0]["series"]["name"] if bs else None,
         "position": bs[0]["position"] if bs else None,
         "featured": ({"series": (feat.get("series") or {}).get("name"), "position": feat.get("position")}
                      if (feat and feat.get("series")) else None),
+        "memberships": [{"series": (r.get("series") or {}).get("name"), "position": r.get("position")}
+                        for r in bs],
         "authors": authors,
     }
 

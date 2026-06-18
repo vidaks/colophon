@@ -68,7 +68,7 @@ REFRESH_MISSING = "refresh-missing"
 # with no cross-book dependency are cached (dup-overlap is excluded — it is decided
 # from the shared-hcid count, which a different book can change).
 SERIES_VERDICT_TTL_DAYS = float(os.environ.get("COLOPHON_SERIES_VERDICT_TTL_DAYS", "14"))
-_CACHEABLE = {"number-ok", "no-series", "no-position", "no-hcid"}
+_CACHEABLE = {"number-ok", "no-series", "no-position", "no-hcid", "alt-series"}
 
 _SQL = (
     "SELECT bm.book_id, IFNULL(bm.title,''), IFNULL(bm.hardcover_book_id,''), "
@@ -167,6 +167,20 @@ def _resolve_membership(cand):
     return cand.get("series"), cand.get("position")
 
 
+def _matching_membership(cand, series_name):
+    """The Hardcover membership whose series name normalizes to grimmory's series_name,
+    or None. Lets the audit accept a valid ALTERNATE grouping — the user keeping a
+    Human Division episode under "Old Man's War" rather than the featured sub-series —
+    instead of treating that disagreement as a variant to move or a mis-seed to flag."""
+    want = matcher._norm(series_name)
+    if not want:
+        return None
+    for m in (cand.get("memberships") or []):
+        if matcher._norm(m.get("series")) == want:
+            return m
+    return None
+
+
 def audit_one(b, hcid_counts):
     """Return (category, reason, fix|None). fix = (isbn, hcid) to heal, when applicable."""
     hcid = b["hcid"]
@@ -197,11 +211,24 @@ def audit_one(b, hcid_counts):
         pos = "" if hc_pos is None else f" #{float(hc_pos):g}"
         return "series-name-missing", f"ungrouped → series {hc_series!r}{pos}", (hc_isbn, hcid)
     if hc_series and not matcher._title_match(b["series_name"], hc_series):
-        # Series name disagrees. If the book TITLE corroborates the hcid, it's a
-        # stale/variant name — heal to canonical so grimmory re-derives the right
-        # one (same heal as number-mismatch). If the title ALSO disagrees, the
-        # hcid itself is suspect (a real mis-seed): leave it for the resolver,
-        # which validates the identity against candidates before locking.
+        # grimmory's series disagrees with the FEATURED series. First: is grimmory's
+        # series nonetheless a real membership of this book — a valid alternate grouping
+        # the user may have chosen (a Human Division episode kept under "Old Man's War")?
+        # If so, accept it; never move it to featured. If the stored name only NORMALIZES
+        # to a real series but isn't it verbatim (a stray "[" or other junk), it can't be
+        # auto-fixed without moving the book, so surface it for a manual fix / re-download.
+        member = _matching_membership(cand, b["series_name"])
+        if member:
+            clean = (member.get("series") or "").strip()
+            if b["series_name"].strip() == clean:
+                return "alt-series", f"valid alternate series {clean!r} (featured is {hc_series!r}) — accepted", None
+            return ("manual",
+                    f"series name {b['series_name']!r} is a corrupt form of {clean!r} — fix in grimmory or re-download",
+                    None)
+        # Not a real series for this book. If the book TITLE corroborates the hcid, it's
+        # a stale/variant name — heal to canonical so grimmory re-derives the right one.
+        # If the title ALSO disagrees, the hcid itself is suspect (a real mis-seed): leave
+        # it for the resolver, which validates the identity against candidates before lock.
         if not (cand.get("title") and matcher._title_match(b["title"], cand["title"])):
             return ("series-mismatch",
                     f"grimmory series {b['series_name']!r} != hcid series {hc_series!r} → mis-seed (resolver)",
@@ -310,14 +337,28 @@ def run(limit=None, apply=False, g=None, store=None, ungrouped_limit=None, force
             errors += 1
     if store:
         store.series_verdict_prune()  # drop expired rows (incl. orphans of deleted books)
+    # The identified books the audit can't fix — a corrupt series name or an unhealable
+    # variant (delete / re-download candidates). On a full apply run, track them so each
+    # is surfaced only once (until its metadata changes); a dry run just lists them.
+    manual_recs = list(cats.get("manual", []))
+    manual_recs += [r for r in cats.get("series-name-variant", []) if r["fix"] is None]
+    manual = [{"book_id": r["book"]["book_id"], "title": r["book"]["title"],
+               "series_name": r["book"]["series_name"], "series_number": r["book"]["series_number"],
+               "reason": r["reason"]} for r in manual_recs]
+    if apply and store is not None and not limit:
+        unreported = set(store.series_manual_observe(
+            [(r["book"]["book_id"], _fingerprint(r["book"])) for r in manual_recs]))
+        manual = [m for m in manual if m["book_id"] in unreported]
     return {"total": len(books), "categories": cats, "run_id": run_id,
             "healed": healed, "regrouped": regrouped, "errors": errors,
-            "cached": cached_hits, "apply": apply}
+            "cached": cached_hits, "manual": manual, "apply": apply}
 
 
-_ORDER = ["number-mismatch", "number-missing", "series-name-missing", "series-name-variant",
-          "series-mismatch", "dup-overlap", "no-position", "no-series", "no-hcid", "error", "number-ok"]
-_LABEL = {"number-mismatch": "Wrong number (heal-fixable)",
+_ORDER = ["manual", "number-mismatch", "number-missing", "series-name-missing", "series-name-variant",
+          "series-mismatch", "dup-overlap", "no-position", "no-series", "no-hcid", "alt-series",
+          "error", "number-ok"]
+_LABEL = {"manual": "Unfixable — needs a manual fix / re-download",
+          "number-mismatch": "Wrong number (heal-fixable)",
           "number-missing": "Missing number (heal-fixable)",
           "series-name-missing": "Ungrouped — missing series name (heal-fixable)",
           "series-name-variant": "Variant series name (heal-fixable)",
@@ -326,6 +367,7 @@ _LABEL = {"number-mismatch": "Wrong number (heal-fixable)",
           "no-position": "Hardcover has no position (leave)",
           "no-series": "Standalone — not in any series (leave)",
           "no-hcid": "Unidentified in a series (leave)",
+          "alt-series": "Valid alternate series (accepted)",
           "error": "Provider lookup error", "number-ok": "Correct"}
 
 
@@ -342,7 +384,7 @@ def render(res):
         if cats.get(k):
             L.append(f"- **{len(cats[k])}** {_LABEL[k]}")
     for k in _ORDER:
-        if k in ("number-ok", "no-series") or not cats.get(k):
+        if k in ("number-ok", "no-series", "alt-series") or not cats.get(k):
             continue
         L.append(f"\n## {_LABEL[k]} ({len(cats[k])})\n")
         for rec in sorted(cats[k], key=lambda r: (r["book"]["series_name"], r["book"]["book_id"])):

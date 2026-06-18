@@ -255,6 +255,8 @@ def cmd_maintain(args, g, store):
             # consume the one-shot report. Silence thereafter = the human keeps it.
             if ok and args.apply and res and res.get("stuck"):
                 store.enrich_mark_reported([s["book_id"] for s in res["stuck"]])
+            if ok and args.apply and res and res.get("manual"):
+                store.series_manual_mark_reported([m["book_id"] for m in res["manual"]])
     return 0 if (res and res["ok"]) else 1
 
 

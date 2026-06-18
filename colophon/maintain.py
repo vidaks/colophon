@@ -60,6 +60,14 @@ def run_maintain(g, store, limit=20, min_conf=0.9, apply=False, force=False):
         res["stuck"] = _gather_stuck(store)
     except Exception as e:  # noqa: BLE001
         res["stuck_error"] = str(e)[:200]
+    # Identified books the audit can't fix (corrupt name / unhealable variant), each
+    # surfaced once with a UI deep-link — the delete/re-download candidates.
+    res["manual"] = []
+    try:
+        for m in (res.get("series") or {}).get("manual", []):
+            res["manual"].append({**m, "url": grimmory.book_url(m["book_id"])})
+    except Exception as e:  # noqa: BLE001
+        res["manual_error"] = str(e)[:200]
     return res
 
 
@@ -94,12 +102,13 @@ def _healed_count(res):
 
 
 def is_noteworthy(res):
-    """Whether a run is worth pushing. A clean no-op run (nothing changed, no error,
-    no new stuck book to surface) stays silent — so a frequent (e.g. hourly) schedule
-    does not spam. A crash (res is None) or a phase failure always surfaces."""
+    """Whether a run is worth pushing. Routine heals/changes stay SILENT — the system is
+    trusted to fix what it can, and a wrong change is something you notice yourself. Only
+    a crash, a phase failure, or a book the automation CAN'T fix (a new delete/re-download
+    candidate, identified or un-seeded) breaks the silence — that is the human's call."""
     if res is None or not res.get("ok", True):
         return True
-    return _healed_count(res) > 0 or bool(res.get("stuck"))
+    return bool(res.get("manual")) or bool(res.get("stuck"))
 
 
 def push(title, body):
@@ -199,6 +208,18 @@ def render_summary(res):
             L.append(f"  ? book {s['book_id']} {s['title']!r}{who}{isbn} (failed {s['fail_count']}x)")
             if s.get("url"):
                 L.append(f"      {s['url']}")
+
+    manual = res.get("manual") or []
+    if manual:
+        L.append("")
+        L.append(f"Unfixable — delete / re-download ({len(manual)}): identified books whose "
+                 "series metadata can't be auto-fixed (a corrupt name, or a parent/sub-series "
+                 "the tool won't move). Listed here ONCE; your call.")
+        for m in manual:
+            num = f"#{m['series_number']}" if m.get("series_number") else ""
+            L.append(f"  ? book {m['book_id']} {m['title']!r} [{(m.get('series_name') or '—')}{num}] — {m['reason']}")
+            if m.get("url"):
+                L.append(f"      {m['url']}")
 
     L += ["", "Full reports under reports/ on the host."]
     return "\n".join(L) + "\n"

@@ -92,6 +92,19 @@ class Store:
                     expires_at REAL NOT NULL
                 )"""
             )
+            # Identified books the series audit can't fix (corrupt name / unhealable
+            # variant) — the delete/re-download candidates. `reported` surfaces each in
+            # the digest exactly once; a fingerprint change (the metadata moved) re-opens
+            # it. Pruned when a book drops out of the unfixable set.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS series_manual(
+                    book_id INTEGER PRIMARY KEY,
+                    fingerprint TEXT NOT NULL,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    reported INTEGER NOT NULL DEFAULT 0
+                )"""
+            )
 
     def epoch(self):
         """Re-audit epoch. Settled (locked) books are only re-opened when this is
@@ -254,6 +267,40 @@ class Store:
         cutoff = time.time() if before is None else float(before)
         with self._conn() as c:
             return c.execute("DELETE FROM series_verdict WHERE expires_at < ?", (cutoff,)).rowcount
+
+    # --- series manual-review list (identified books the audit can't fix) ---
+
+    def series_manual_observe(self, items):
+        """Record the current set of unfixable series books — `items` is the full
+        [(book_id, fingerprint)] the audit flagged but could not heal. A book whose
+        fingerprint changed (its metadata moved) re-opens (reported=0); books no longer
+        in the set are pruned. Returns the book_ids not yet reported — the new ones to
+        surface once in the digest (delete/re-download candidates)."""
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        cur = {int(b): fp for b, fp in items}
+        with self._conn() as c:
+            tracked = {r["book_id"]: r["fingerprint"]
+                       for r in c.execute("SELECT book_id, fingerprint FROM series_manual")}
+            gone = set(tracked) - set(cur)
+            if gone:
+                c.executemany("DELETE FROM series_manual WHERE book_id=?", [(b,) for b in gone])
+            for b, fp in cur.items():
+                if tracked.get(b) == fp:
+                    continue  # unchanged — keep its reported flag
+                c.execute(
+                    "INSERT INTO series_manual(book_id,fingerprint,first_seen,last_seen,reported) "
+                    "VALUES(?,?,?,?,0) ON CONFLICT(book_id) DO UPDATE SET "
+                    "fingerprint=excluded.fingerprint, last_seen=excluded.last_seen, reported=0",
+                    (b, fp, now, now))
+            return [r["book_id"] for r in
+                    c.execute("SELECT book_id FROM series_manual WHERE reported=0")]
+
+    def series_manual_mark_reported(self, book_ids):
+        """Mark surfaced books reported — they won't reappear in a later digest unless
+        their fingerprint changes. Returns rows touched."""
+        with self._conn() as c:
+            return c.executemany("UPDATE series_manual SET reported=1 WHERE book_id=?",
+                                 [(int(b),) for b in book_ids]).rowcount
 
     @staticmethod
     def loads(row, field):

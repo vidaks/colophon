@@ -95,19 +95,40 @@ class AuditOne(unittest.TestCase):
         self.assertEqual(cat, "number-ok")
         self.assertIsNone(fix)
 
-    def test_grimmory_under_a_non_featured_series_is_not_a_number_mismatch(self):
-        # 724-style: grimmory grouped it under "Old Man's War" but the FEATURED series is
-        # "The Human Division". Comparing against featured keeps the name disagreement on
-        # the variant/mis-seed path — it must NOT become a (re-firing) number-mismatch.
+    def test_valid_alternate_series_is_accepted_not_moved(self):
+        # The user keeps a Human Division episode under "Old Man's War" — a real Hardcover
+        # membership, even though the featured series is the sub-series. Accept it: don't
+        # flag it, don't move it, don't surface it.
         _stub_lookup({"100": {
             "title": "The B-Team", "isbn": "9781466830516",
             "series": "The Human Division", "position": 1,
             "featured": {"series": "The Human Division", "position": 1},
+            "memberships": [{"series": "The Human Division", "position": 1},
+                            {"series": "Old Man's War", "position": 5.01}],
         }})
         b = _row(title="The Human Division #1: The B-Team", series_name="Old Man's War",
                  series_number="5", isbn="9781466830516")
         cat, _, fix = series_audit.audit_one(b, {})
-        self.assertNotEqual(cat, "number-mismatch")
+        self.assertEqual(cat, "alt-series")
+        self.assertIsNone(fix)
+
+    def test_corrupt_series_name_is_manual_not_moved(self):
+        # Same book, but the stored name carries import junk ("[Old Man's War"). It
+        # normalizes to a real series, so it's a corruption colophon can't safely fix
+        # (a refresh would move it to the featured sub-series) → surface for delete/redownload.
+        _stub_lookup({"100": {
+            "title": "The B-Team", "isbn": "9781466830516",
+            "series": "The Human Division", "position": 1,
+            "featured": {"series": "The Human Division", "position": 1},
+            "memberships": [{"series": "The Human Division", "position": 1},
+                            {"series": "Old Man's War", "position": 5.01}],
+        }})
+        b = _row(title="The Human Division #1: The B-Team", series_name="[Old Man's War",
+                 series_number="5", isbn="9781466830516")
+        cat, reason, fix = series_audit.audit_one(b, {})
+        self.assertEqual(cat, "manual")
+        self.assertIsNone(fix)
+        self.assertIn("re-download", reason)
 
     def test_number_ok(self):
         _stub_lookup({"100": {"series": "Dune", "position": 5, "isbn": "9780441013593"}})
