@@ -81,6 +81,34 @@ class AuditOne(unittest.TestCase):
         self.assertEqual(cat, "number-mismatch")
         self.assertEqual(fix, ("9780441013593", "100"))
 
+    def test_uses_featured_position_not_the_lowest_membership(self):
+        # An Expanse novella: book_by_id's default (lowest) position is 0.1 ("The Expanse
+        # (Chronological)"), but grimmory derives the FEATURED "The Expanse" #2.7. Compare
+        # against featured → number-ok; comparing against 0.1 was a heal that re-fired forever.
+        _stub_lookup({"100": {
+            "title": "Drive", "isbn": "9780356519371",
+            "series": "The Expanse (Chronological)", "position": 0.1,  # default (lowest)
+            "featured": {"series": "The Expanse", "position": 2.7},
+        }})
+        b = _row(series_name="The Expanse", series_number="2.7", isbn="9780356519371")
+        cat, _, fix = series_audit.audit_one(b, {})
+        self.assertEqual(cat, "number-ok")
+        self.assertIsNone(fix)
+
+    def test_grimmory_under_a_non_featured_series_is_not_a_number_mismatch(self):
+        # 724-style: grimmory grouped it under "Old Man's War" but the FEATURED series is
+        # "The Human Division". Comparing against featured keeps the name disagreement on
+        # the variant/mis-seed path — it must NOT become a (re-firing) number-mismatch.
+        _stub_lookup({"100": {
+            "title": "The B-Team", "isbn": "9781466830516",
+            "series": "The Human Division", "position": 1,
+            "featured": {"series": "The Human Division", "position": 1},
+        }})
+        b = _row(title="The Human Division #1: The B-Team", series_name="Old Man's War",
+                 series_number="5", isbn="9781466830516")
+        cat, _, fix = series_audit.audit_one(b, {})
+        self.assertNotEqual(cat, "number-mismatch")
+
     def test_number_ok(self):
         _stub_lookup({"100": {"series": "Dune", "position": 5, "isbn": "9780441013593"}})
         b = _row(series_name="Dune", series_number="5")

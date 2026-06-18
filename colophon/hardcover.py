@@ -69,6 +69,7 @@ def book_by_id(hcid):
         "query { b: books_by_pk(id: %d) { id slug title pages users_count canonical_id "
         "default_physical_edition { isbn_13 } "
         "editions(where:{isbn_13:{_is_null:false}}, limit:1){ isbn_13 } "
+        "featured_book_series { position series { name } } "
         "book_series(order_by:{position:asc}){ position series { name } } "
         "contributions { author { name } } } }" % int(hcid)
     )
@@ -80,13 +81,21 @@ def book_by_id(hcid):
         eds = b.get("editions") or []
         isbn = eds[0]["isbn_13"] if eds else None
     bs = b.get("book_series") or []
+    feat = b.get("featured_book_series")
     authors = [c["author"]["name"] for c in (b.get("contributions") or []) if c.get("author")]
     return {
         "hcid": b["id"], "slug": b.get("slug"), "title": b.get("title"),
         "isbn": isbn, "pages": b.get("pages"), "users_count": b.get("users_count") or 0,
         "canonical_id": b.get("canonical_id"),
+        # Default series/position is the lowest-position membership (back-compat for
+        # callers that don't care which series). `featured` is the one grimmory derives
+        # on refresh — a book in several series (an Expanse novella in both the
+        # publication and chronological orderings) has a different position in each, so
+        # the series audit compares against featured, not the lowest.
         "series": bs[0]["series"]["name"] if bs else None,
         "position": bs[0]["position"] if bs else None,
+        "featured": ({"series": (feat.get("series") or {}).get("name"), "position": feat.get("position")}
+                     if (feat and feat.get("series")) else None),
         "authors": authors,
     }
 

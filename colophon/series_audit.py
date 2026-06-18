@@ -151,6 +151,22 @@ def _verdict_expiry():
     return time.time() + base - random.uniform(0.0, base / 2.0)
 
 
+def _resolve_membership(cand):
+    """The (series, position) the audit compares against. grimmory derives a book's
+    series from its FEATURED Hardcover membership, so the audit must compare grimmory's
+    number against the FEATURED position — not the lowest-position membership that
+    book_by_id returns by default. A book in several series has a different position in
+    each (an Expanse novella: featured "The Expanse" #2.7 vs "The Expanse (Chronological)"
+    #0.1), so comparing against the wrong one is a false mismatch that re-heals forever
+    without converging. Using the featured series also keeps a genuine mis-seed/variant
+    (grimmory's name disagrees with the featured series) on the name path, not reclassified
+    into a number-mismatch. Falls back to the default when Hardcover exposes no featured."""
+    feat = cand.get("featured")
+    if feat and feat.get("series"):
+        return feat.get("series"), feat.get("position")
+    return cand.get("series"), cand.get("position")
+
+
 def audit_one(b, hcid_counts):
     """Return (category, reason, fix|None). fix = (isbn, hcid) to heal, when applicable."""
     hcid = b["hcid"]
@@ -163,7 +179,8 @@ def audit_one(b, hcid_counts):
         return "error", f"hardcover lookup failed: {cand[1][:50]}", None
     if not cand:
         return "series-mismatch", f"hcid {hcid} not found in Hardcover", None
-    hc_series, hc_pos, hc_isbn = cand.get("series"), cand.get("position"), cand.get("isbn")
+    hc_series, hc_pos = _resolve_membership(cand)
+    hc_isbn = cand.get("isbn")
     if not b["series_name"]:
         if not hc_series:
             return "no-series", "standalone — no series in grimmory or Hardcover", None
