@@ -64,7 +64,7 @@ class Grimmory:
             raise GrimmoryError("failed to mint admin token (Remote-User auth)")
         return self._token
 
-    def _call(self, method, path, body=None):
+    def _call(self, method, path, body=None, _retried=False):
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(
             f"{self.base}{path}", data=data, method=method,
@@ -74,6 +74,10 @@ class Grimmory:
             with urllib.request.urlopen(req, timeout=90) as r:
                 return r.status, r.read().decode()
         except urllib.error.HTTPError as e:
+            if e.code == 401 and not _retried:
+                # Token expired mid-run (minted once per process) — re-mint once.
+                self._token = None
+                return self._call(method, path, body, _retried=True)
             return e.code, e.read().decode()
 
     def settings(self):
@@ -137,7 +141,13 @@ class Grimmory:
         @RequestParam Set<Long> — a QUERY parameter, NOT a JSON body (a body 500s;
         confirmed against a live throwaway record). grimmory removes the record AND
         its files; the response reports any `failedFileDeletions`, for which the
-        caller's own file unlink is the fallback. Used only by the plan-22 gate."""
+        caller's own file unlink is the fallback. Used only by the plan-22 gate —
+        the ONE call that destroys files, so it refuses unless the deployment
+        opts in explicitly via COLOPHON_ALLOW_DELETE=1."""
+        if os.environ.get("COLOPHON_ALLOW_DELETE") != "1":
+            raise GrimmoryError(
+                "delete_books refused — removes records AND files; "
+                "set COLOPHON_ALLOW_DELETE=1 to enable (the acquisition gate does)")
         ids = [int(b) for b in book_ids]
         if not ids:
             return None
@@ -169,12 +179,18 @@ def _db(sql):
 
 
 def book_ids_by_filename(file_name):
-    """book_id(s) whose `book_file.file_name` matches exactly — read-only. Lets the
+    """book_id(s) whose `book_file.file_name` matches — read-only. Lets the
     acquisition gate resolve a just-landed grab to its grimmory record(s) before
-    deleting it. Single quotes in the name are SQL-escaped (titles like
-    "Salvation's Child")."""
-    safe = (file_name or "").replace("'", "''")
-    out = _db(f"SELECT book_id FROM book_file WHERE file_name='{safe}';").strip()
+    deleting it. The name is passed as a hex literal: filenames come from indexers
+    (attacker-influenced), and quote-escaping alone is bypassable via backslash under
+    MariaDB's default SQL mode — `mariadb -e` would then run the injected statement
+    as root. CAST back to CHAR so the comparison keeps the column's collation
+    (case-insensitive), same matching as the old quoted literal."""
+    if not file_name:
+        return []
+    hexname = file_name.encode("utf-8").hex()
+    out = _db("SELECT book_id FROM book_file WHERE file_name="
+              f"CAST(x'{hexname}' AS CHAR CHARACTER SET utf8mb4);").strip()
     return [int(x) for x in out.split() if x.strip().isdigit()]
 
 
@@ -244,6 +260,113 @@ def epub_path(book_id):
     parts = out.split("\t")
     sub, name = (parts[0], parts[1]) if len(parts) == 2 else ("", parts[-1])
     return os.path.join(BOOKS_ROOT, sub, name) if sub else os.path.join(BOOKS_ROOT, name)
+
+
+# --- read-only surveys -------------------------------------------------------
+# Every query that knows grimmory's schema lives HERE, so porting to another
+# Booklore-family server really is a matter of reimplementing this one module
+# (the README makes that claim; this keeps it true). Callers get plain dicts.
+
+_SURVEY_BROKEN_ISBN = (
+    "SELECT book_id FROM book_metadata "
+    "WHERE hardcover_book_id IS NOT NULL AND hardcover_book_id<>'' "
+    "AND (isbn_13 IS NULL OR isbn_13='' OR LENGTH(REPLACE(isbn_13,'-',''))<>13) "
+    "AND (isbn_13_locked IS NULL OR isbn_13_locked=0) "
+    "ORDER BY book_id LIMIT {limit};"
+)
+
+_UNSEEDED = (
+    "SELECT bm.book_id FROM book_metadata bm JOIN book b ON b.id=bm.book_id "
+    "WHERE (bm.hardcover_book_id IS NULL OR bm.hardcover_book_id='') "
+    "AND (b.deleted IS NULL OR b.deleted=0) ORDER BY bm.book_id;"
+)
+
+_ALL_BOOKS = (
+    "SELECT bm.book_id, IFNULL(bm.title,''), IFNULL(bm.isbn_13,''), "
+    "IFNULL(bm.hardcover_book_id,''), IFNULL(bm.isbn_13_locked,0), "
+    "IFNULL((SELECT GROUP_CONCAT(a.name ORDER BY m.sort_order SEPARATOR ', ') "
+    "  FROM book_metadata_author_mapping m JOIN author a ON a.id=m.author_id WHERE m.book_id=bm.book_id),''), "
+    "IFNULL((SELECT MAX(f.file_size_kb) FROM book_file f WHERE f.book_id=bm.book_id),0), "
+    "IFNULL(DATE(b.added_on),'') "
+    "FROM book_metadata bm JOIN book b ON b.id=bm.book_id "
+    "WHERE b.deleted IS NULL OR b.deleted=0;"
+)
+
+_SERIES_BOOKS = (
+    "SELECT bm.book_id, IFNULL(bm.title,''), IFNULL(bm.hardcover_book_id,''), "
+    "IFNULL(bm.series_name,''), IFNULL(bm.series_number,''), IFNULL(bm.isbn_13,''), "
+    "IFNULL(bm.series_number_locked,0), IFNULL(bm.series_name_locked,0) "
+    "FROM book_metadata bm JOIN book b ON b.id=bm.book_id "
+    "WHERE (b.deleted IS NULL OR b.deleted=0) "
+    "AND bm.series_name IS NOT NULL AND bm.series_name<>'';"
+)
+
+_UNGROUPED = (
+    "SELECT bm.book_id, IFNULL(bm.title,''), IFNULL(bm.hardcover_book_id,''), "
+    "IFNULL(bm.isbn_13,''), IFNULL(bm.series_name_locked,0) "
+    "FROM book_metadata bm JOIN book b ON b.id=bm.book_id "
+    "WHERE (b.deleted IS NULL OR b.deleted=0) "
+    "AND bm.hardcover_book_id IS NOT NULL AND bm.hardcover_book_id<>'' "
+    "AND (bm.series_name IS NULL OR bm.series_name='') "
+    "AND bm.isbn_13 IS NOT NULL AND LENGTH(REPLACE(bm.isbn_13,'-',''))=13 "
+    # RAND() so a residual set of stuck/standalone ungrouped books can't permanently
+    # monopolise the per-run cap and starve newly-ungrouped books of a survey slot.
+    "ORDER BY RAND() LIMIT {limit};"
+)
+
+
+def survey_broken_isbn(limit):
+    """book_ids with a Hardcover id but a missing/malformed, UNLOCKED ISBN — the
+    high-confidence backfill candidates. Locked (settled) books never reappear."""
+    out = _db(_SURVEY_BROKEN_ISBN.format(limit=int(limit)))
+    return [int(x) for x in out.split()]
+
+
+def unseeded_ids():
+    """book_ids that still lack a Hardcover id (bare watch-imports), excluding
+    soft-deleted ones. Locks are irrelevant — no identity to protect yet."""
+    return [int(x) for x in _db(_UNSEEDED).split()]
+
+
+def all_books():
+    """Every live book as {book_id, title, isbn, hcid, locked, authors, kb, added}."""
+    books = []
+    for line in _db(_ALL_BOOKS).splitlines():
+        c = line.split("\t")
+        if len(c) < 8:
+            continue
+        books.append({"book_id": int(c[0]), "title": c[1], "isbn": c[2], "hcid": c[3],
+                      "locked": c[4] == "1", "authors": c[5], "kb": int(c[6] or 0), "added": c[7]})
+    return books
+
+
+def series_books():
+    """Every live book that carries a series_name, with its number + lock flags."""
+    rows = []
+    for line in _db(_SERIES_BOOKS).splitlines():
+        c = line.split("\t")
+        if len(c) < 8:
+            continue
+        rows.append({"book_id": int(c[0]), "title": c[1], "hcid": c[2].strip(),
+                     "series_name": c[3], "series_number": c[4].strip(),
+                     "isbn": c[5].strip(), "num_locked": c[6] == "1", "name_locked": c[7] == "1"})
+    return rows
+
+
+def ungrouped_candidates(limit):
+    """hcid'd books with a clean 13-char ISBN but no series_name — possible ungrouped
+    series members. Bounded and randomised; healed books drop out next run."""
+    if not limit:
+        return []
+    rows = []
+    for line in _db(_UNGROUPED.format(limit=int(limit))).splitlines():
+        c = line.split("\t")
+        if len(c) < 5:
+            continue
+        rows.append({"book_id": int(c[0]), "title": c[1], "hcid": c[2].strip(),
+                     "series_name": "", "series_number": "", "isbn": c[3].strip(),
+                     "num_locked": False, "name_locked": c[4] == "1"})
+    return rows
 
 
 def signature(snap):
