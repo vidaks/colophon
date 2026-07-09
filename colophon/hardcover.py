@@ -9,6 +9,7 @@ return the JSON response (useful when the key lives in a secrets manager). A lea
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 import urllib.error
@@ -44,7 +45,10 @@ def query(graphql):
                 with urllib.request.urlopen(req, timeout=60) as response:
                     data = json.load(response)
             elif QUERY_SH:  # delegate so the key never enters this process
-                r = subprocess.run([QUERY_SH], input=graphql, capture_output=True, text=True, timeout=60)
+                # shlex.split so the command may carry arguments — same convention
+                # as COLOPHON_NOTIFY_CMD in maintain.push().
+                r = subprocess.run(shlex.split(QUERY_SH), input=graphql,
+                                   capture_output=True, text=True, timeout=60)
                 if r.returncode != 0:
                     raise HardcoverError(f"query command failed: {r.stderr.strip()[:200]}")
                 data = json.loads(r.stdout)
@@ -68,7 +72,9 @@ def book_by_id(hcid):
     q = (
         "query { b: books_by_pk(id: %d) { id slug title pages users_count canonical_id "
         "default_physical_edition { isbn_13 } "
-        "editions(where:{isbn_13:{_is_null:false}}, limit:1){ isbn_13 } "
+        # order_by makes the fallback edition deterministic across runs — a convergence
+        # system must not have a target ISBN that changes with Hasura's row order.
+        "editions(where:{isbn_13:{_is_null:false}}, order_by:{id:asc}, limit:1){ isbn_13 } "
         "featured_book_series { position series { name } } "
         "book_series(order_by:{position:asc}){ position series { name } } "
         "contributions { author { name } } } }" % int(hcid)
@@ -129,7 +135,7 @@ def search(query_text, per_page=8):
     safe = json.dumps(query_text)  # GraphQL string literal, escaped
     gql = (f'query {{ search(query: {safe}, query_type: "Book", per_page: {int(per_page)}, '
            f'page: 1) {{ results }} }}')
-    results = (search_raw := query(gql)).get("search") or {}
+    results = query(gql).get("search") or {}
     out = []
     for h in (results.get("results") or {}).get("hits") or []:
         d = h.get("document") or {}
