@@ -104,6 +104,7 @@ def _resolve_by_isbn(bid, title, authors, isbns):
             continue
         return {"book_id": bid, "title": title, "action": "propose", "source": "epub-opf",
                 "chosen_id": str(cand["hcid"]), "chosen_title": cand.get("title"),
+                "authors": cand.get("authors"),
                 "isbn": isbn13, "slug": cand.get("slug"), "confidence": 0.97,
                 "is_set": None, "reason": f"OPF ISBN {isbn} → {cand.get('title')!r}"}
     return None
@@ -165,6 +166,8 @@ def resolve(book, file_signals=None):
     return {
         "book_id": bid, "title": title, "action": "propose", "chosen_id": chosen,
         "chosen_title": (detail or {}).get("title") or next(c["title"] for c in catalog if c["id"] == chosen),
+        "authors": ((detail or {}).get("authors")
+                    or next((c["authors"] for c in catalog if c["id"] == chosen), None)),
         "isbn": (detail or {}).get("isbn"), "slug": (detail or {}).get("slug"),
         "confidence": conf, "is_set": d.get("is_set"), "reason": reason,
         "source": "epub-colophon" if colophon else None,
@@ -218,13 +221,16 @@ def run_resolve(limit=None, book_ids=None, apply=False, min_conf=AUTO_CONF, g=No
                 p["applied"] = True
             except Exception as e:
                 p["applied"], p["apply_error"] = False, str(e)[:100]
-                errors += 1
         if apply and store:
             _record_skip(store, b, p)
         proposals.append(p)
-        if p.get("apply_error") and errors >= ABORT_ERRORS:
-            p["aborted"] = True
-            break
+        # Adjudication failures (action=error: Anthropic/Hardcover down) count toward
+        # the breaker just like apply failures — an outage must not walk the whole list.
+        if p["action"] == "error" or p.get("apply_error"):
+            errors += 1
+            if errors >= ABORT_ERRORS:
+                p["aborted"] = True
+                break
     return {"count": len(proposals), "proposals": proposals, "run_id": run_id,
             "applied": sum(1 for p in proposals if p.get("applied")), "skipped": skipped}
 

@@ -13,6 +13,22 @@ def _propose(conf, source=None, cid="a"):
             "slug": "x", "source": source}
 
 
+class AdjudicationBreaker(unittest.TestCase):
+    def test_adjudication_errors_trip_the_breaker(self):
+        # An Anthropic/Hardcover outage returns action=error for every book; the run
+        # must stop at ABORT_ERRORS instead of walking (and paying for) the whole list.
+        books = [{"book_id": i, "title": f"B{i}", "authors": ""} for i in range(1, 7)]
+        err = lambda b, file_signals=None: {  # noqa: E731
+            "book_id": b["book_id"], "title": b["title"], "action": "error", "reason": "api down"}
+        with mock.patch.object(audit, "all_books", return_value=books), \
+             mock.patch.object(resolver, "_epub_signals", return_value=None), \
+             mock.patch.object(resolver, "resolve", side_effect=err), \
+             mock.patch.object(resolver.time, "sleep", new=lambda s: None):
+            out = resolver.run_resolve(book_ids=[1, 2, 3, 4, 5, 6], apply=False, store=None)
+        self.assertEqual(len(out["proposals"]), resolver.ABORT_ERRORS)
+        self.assertTrue(out["proposals"][-1].get("aborted"))
+
+
 class Escalation(unittest.TestCase):
     def test_below_threshold_inspects_and_swaps_in_better(self):
         seq = [_propose(0.6), _propose(0.97, source="epub-opf", cid="b")]  # first pass, then escalated
