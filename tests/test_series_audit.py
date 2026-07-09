@@ -31,7 +31,7 @@ class AuditOne(unittest.TestCase):
 
     def test_ungrouped_heals_to_canonical(self):
         # null series_name + non-canonical 13-char ISBN + Hardcover series → heal.
-        _stub_lookup({"100": {"series": "Foundation", "position": 2,
+        _stub_lookup({"100": {"title": "T", "series": "Foundation", "position": 2,
                               "isbn": "9780553293357"}})
         b = _row(series_name="", isbn="9788424117788")  # foreign edition
         cat, reason, fix = series_audit.audit_one(b, {})
@@ -45,10 +45,22 @@ class AuditOne(unittest.TestCase):
         self.assertEqual(cat, "no-series")
         self.assertIsNone(fix)
 
+    def test_ungrouped_title_must_corroborate_hcid(self):
+        # An ungrouped MIS-SEED: the hcid's title is a different work. No grouping
+        # write may be derived from a suspect identity → resolver, not a heal.
+        _stub_lookup({"100": {"title": "Foundation and Empire", "series": "Foundation",
+                              "position": 2, "isbn": "9780553293357"}})
+        b = _row(title="Foundation", series_name="", isbn="9788424117788")
+        cat, reason, fix = series_audit.audit_one(b, {})
+        self.assertEqual(cat, "series-mismatch")
+        self.assertIsNone(fix)
+        self.assertIn("does not corroborate", reason)
+
     def test_ungrouped_already_canonical_refreshes_to_rederive(self):
         # Same ISBN as Hardcover's canonical → no ISBN swap to make, but Hardcover
         # DOES place it in a series, so a plain REPLACE_MISSING refresh re-derives it.
-        _stub_lookup({"100": {"series": "Dune", "position": 1, "isbn": "9780441013593"}})
+        _stub_lookup({"100": {"title": "T", "series": "Dune", "position": 1,
+                              "isbn": "9780441013593"}})
         cat, reason, fix = series_audit.audit_one(_row(isbn="978-0-441-01359-3"), {})
         self.assertEqual(cat, "series-name-missing")
         self.assertEqual(fix, (series_audit.REFRESH_MISSING, "100"))
@@ -57,13 +69,14 @@ class AuditOne(unittest.TestCase):
     def test_ungrouped_no_canonical_isbn_refreshes_to_rederive(self):
         # Hardcover has the series but exposes no canonical ISBN to swap to → the
         # book's existing ISBN still re-derives the series on a REPLACE_MISSING refresh.
-        _stub_lookup({"100": {"series": "Dune", "position": 1, "isbn": None}})
+        _stub_lookup({"100": {"title": "T", "series": "Dune", "position": 1, "isbn": None}})
         cat, reason, fix = series_audit.audit_one(_row(isbn="9788424117788"), {})
         self.assertEqual(cat, "series-name-missing")
         self.assertEqual(fix, (series_audit.REFRESH_MISSING, "100"))
 
     def test_ungrouped_name_locked_not_healed(self):
-        _stub_lookup({"100": {"series": "Dune", "position": 1, "isbn": "9780441013593"}})
+        _stub_lookup({"100": {"title": "T", "series": "Dune", "position": 1,
+                              "isbn": "9780441013593"}})
         cat, reason, fix = series_audit.audit_one(_row(isbn="9788424117788", name_locked=True), {})
         self.assertEqual(cat, "series-name-missing")
         self.assertIsNone(fix)
@@ -75,11 +88,25 @@ class AuditOne(unittest.TestCase):
         self.assertIsNone(fix)
 
     def test_number_mismatch_still_heals(self):
-        _stub_lookup({"100": {"series": "Dune", "position": 5, "isbn": "9780441013593"}})
+        _stub_lookup({"100": {"title": "T", "series": "Dune", "position": 5,
+                              "isbn": "9780441013593"}})
         b = _row(series_name="Dune", series_number="2", isbn="9788424117788")
         cat, _, fix = series_audit.audit_one(b, {})
         self.assertEqual(cat, "number-mismatch")
         self.assertEqual(fix, ("9780441013593", "100"))
+
+    def test_number_mismatch_wrong_volume_not_healed(self):
+        # The commonest mis-seed: the wrong VOLUME of the right series. Same series
+        # name, different number, and the hcid's title is a sibling title. Healing
+        # would lock the wrong book — hold the fix; the audit routes it to the resolver.
+        _stub_lookup({"100": {"title": "Foundation and Empire", "series": "Foundation",
+                              "position": 2, "isbn": "9780553293357"}})
+        b = _row(title="Foundation", series_name="Foundation", series_number="1",
+                 isbn="9788424117788")
+        cat, reason, fix = series_audit.audit_one(b, {})
+        self.assertEqual(cat, "number-mismatch")
+        self.assertIsNone(fix)
+        self.assertIn("not auto-healed", reason)
 
     def test_uses_featured_position_not_the_lowest_membership(self):
         # An Expanse novella: book_by_id's default (lowest) position is 0.1 ("The Expanse
@@ -189,7 +216,8 @@ class RunSurvey(unittest.TestCase):
             return ""  # no books already carrying a series_name
 
         series_audit.grimmory._db = fake_db
-        _stub_lookup({"200": {"series": "Foundation", "position": 3, "isbn": "9780553293357"}})
+        _stub_lookup({"200": {"title": "The Ungrouped One", "series": "Foundation",
+                              "position": 3, "isbn": "9780553293357"}})
 
     def tearDown(self):
         series_audit.grimmory._db, series_audit.audit._book_by_id = self._db, self._lookup
@@ -218,7 +246,8 @@ class RunRegroup(unittest.TestCase):
             return ""
 
         series_audit.grimmory._db = fake_db
-        _stub_lookup({"200": {"series": "Foundation", "position": 3, "isbn": "9780553293357"}})
+        _stub_lookup({"200": {"title": "The Ungrouped One", "series": "Foundation",
+                              "position": 3, "isbn": "9780553293357"}})
 
     def tearDown(self):
         series_audit.grimmory._db = self._db
@@ -411,11 +440,11 @@ class ManualRenderInstruction(unittest.TestCase):
             {"book_id": 605, "title": "Evil is a Matter of Perspective",
              "series_name": "Evil is a Matter of Perspective", "series_number": "1",
              "reason": "variant ...", "rename_to": "Tales of the Apt",
-             "url": "https://books.akselsen.net/book/605"}]))
+             "url": "https://books.example.com/book/605"}]))
         self.assertIn("book 605", out)
         # FROM and TO both present, connected by the arrow, on the rename line.
         self.assertRegex(out, r"rename:.*Evil is a Matter of Perspective.*→.*Tales of the Apt")
-        self.assertIn("https://books.akselsen.net/book/605", out)
+        self.assertIn("https://books.example.com/book/605", out)
 
     def test_falls_back_to_reason_without_a_target(self):
         out = maintain.render_summary(self._res([

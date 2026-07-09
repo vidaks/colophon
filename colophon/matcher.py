@@ -29,6 +29,9 @@ def _norm(s):
 
 
 def _title_match(a, b):
+    """LOOSE match — good enough to ROUTE a book (review vs ok), never to WRITE.
+    Substring containment means "Foundation" matches "Foundation and Empire"; gating
+    a heal on this would lock the wrong work (series title-prefix naming is common)."""
     na, nb = _norm(a), _norm(b)
     if not na or not nb:
         return False
@@ -36,6 +39,23 @@ def _title_match(a, b):
         return True
     ta, tb = set(na.split()), set(nb.split())
     return len(ta & tb) / max(1, min(len(ta), len(tb))) >= 0.7
+
+
+def _title_match_strict(a, b):
+    """Near-exact match — the bar for AUTO-HEALING. Normalized equality, also accepted
+    with a ':'-subtitle stripped from ONE side against the other's FULL title
+    ("Mistborn: The Final Empire" vs "Mistborn"). Never prefix-vs-prefix: stripping
+    both sides would bless same-franchise siblings ("Star Wars: Thrawn" vs
+    "Star Wars: Thrawn Ascendancy"). Prefix titles ("Dune" vs "Dune Messiah")
+    deliberately fail: anything looser goes to the resolver, which validates the
+    identity before a lock."""
+    na, nb = _norm(a), _norm(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    sa, sb = _norm((a or "").split(":")[0]), _norm((b or "").split(":")[0])
+    return sa == nb or na == sb
 
 
 def _digits(s):
@@ -86,6 +106,14 @@ def propose(snap):
         out.update(action=("ok" if _digits(cur) == canon else "ok-altedition"),
                    reason=("already canonical" if _digits(cur) == canon
                            else f"valid non-canonical edition ({cur}); left as-is"))
+        return out
+    # A write needs near-exact title agreement; a loose (substring/overlap) match is
+    # only strong enough to route. Otherwise "Foundation" carrying the hcid of
+    # "Foundation and Empire" would be healed and LOCKED to the wrong work.
+    if not _title_match_strict(snap.get("title"), cand["title"]):
+        out.update(action="review-misseed",
+                   reason=f"title only loosely matches hcid: {snap.get('title')!r} vs "
+                          f"{cand['title']!r} — adjudicate before a write")
         return out
     # stored ISBN is missing/malformed and the identity is right → heal.
     out.update(action="heal", isbn=canon, hcid=str(cand["hcid"]), slug=cand["slug"],

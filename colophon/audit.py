@@ -57,34 +57,20 @@ def audit_book(b):
     if (cand.get("users_count") or 0) < LOW_USERS:
         flags.append(f"obscure (users={cand['users_count']})")
     if len(re.sub(r"\D", "", isbn)) != 13:
+        # Only the broken-ISBN band leads to a write, so only here does loose-vs-strict
+        # matter (mirrors matcher.propose — a valid-ISBN book with a decorated title
+        # must stay ok, not be fed to the resolver every night).
+        if not matcher._title_match_strict(title, cand["title"]):
+            return "review-misseed", f"title only loosely matches hcid: {title!r} vs {cand['title']!r}"
         return "heal-isbn", f"identity ok, ISBN broken/missing ({isbn or 'none'})"
     if flags:
         return "review-lowconf", "; ".join(flags)
     return "ok", "matches"
 
 
-_ALL = (
-    "SELECT bm.book_id, IFNULL(bm.title,''), IFNULL(bm.isbn_13,''), "
-    "IFNULL(bm.hardcover_book_id,''), IFNULL(bm.isbn_13_locked,0), "
-    "IFNULL((SELECT GROUP_CONCAT(a.name ORDER BY m.sort_order SEPARATOR ', ') "
-    "  FROM book_metadata_author_mapping m JOIN author a ON a.id=m.author_id WHERE m.book_id=bm.book_id),''), "
-    "IFNULL((SELECT MAX(f.file_size_kb) FROM book_file f WHERE f.book_id=bm.book_id),0), "
-    "IFNULL(DATE(b.added_on),'') "
-    "FROM book_metadata bm JOIN book b ON b.id=bm.book_id "
-    "WHERE b.deleted IS NULL OR b.deleted=0;"
-)
-
-
-def all_books():
-    out = grimmory._db(_ALL)
-    books = []
-    for line in out.splitlines():
-        c = line.split("\t")
-        if len(c) < 8:
-            continue
-        books.append({"book_id": int(c[0]), "title": c[1], "isbn": c[2], "hcid": c[3],
-                      "locked": c[4] == "1", "authors": c[5], "kb": int(c[6] or 0), "added": c[7]})
-    return books
+# Re-export; the survey SQL lives in the grimmory seam. Kept as a module attribute
+# because the resolver (and tests) reach it as audit.all_books.
+all_books = grimmory.all_books
 
 
 def find_duplicates(books):

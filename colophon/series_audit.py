@@ -63,65 +63,12 @@ REFRESH_MISSING = "refresh-missing"
 
 # Verdict cache: settled (non-actionable) verdicts are cached so the sweep stops
 # re-querying Hardcover for unchanged books — which is what lets the schedule run
-# far more often than nightly. The TTL is jittered per entry (expiry in [TTL, 2*TTL])
+# far more often than nightly. The TTL is jittered per entry (expiry in [TTL/2, TTL])
 # so a bulk-populated cache expires as a trickle, never all on one run. Only verdicts
 # with no cross-book dependency are cached (dup-overlap is excluded — it is decided
 # from the shared-hcid count, which a different book can change).
 SERIES_VERDICT_TTL_DAYS = float(os.environ.get("COLOPHON_SERIES_VERDICT_TTL_DAYS", "14"))
 _CACHEABLE = {"number-ok", "no-series", "no-position", "no-hcid", "alt-series"}
-
-_SQL = (
-    "SELECT bm.book_id, IFNULL(bm.title,''), IFNULL(bm.hardcover_book_id,''), "
-    "IFNULL(bm.series_name,''), IFNULL(bm.series_number,''), IFNULL(bm.isbn_13,''), "
-    "IFNULL(bm.series_number_locked,0), IFNULL(bm.series_name_locked,0) "
-    "FROM book_metadata bm JOIN book b ON b.id=bm.book_id "
-    "WHERE (b.deleted IS NULL OR b.deleted=0) "
-    "AND bm.series_name IS NOT NULL AND bm.series_name<>'';"
-)
-
-
-_UNGROUPED_SQL = (
-    "SELECT bm.book_id, IFNULL(bm.title,''), IFNULL(bm.hardcover_book_id,''), "
-    "IFNULL(bm.isbn_13,''), IFNULL(bm.series_name_locked,0) "
-    "FROM book_metadata bm JOIN book b ON b.id=bm.book_id "
-    "WHERE (b.deleted IS NULL OR b.deleted=0) "
-    "AND bm.hardcover_book_id IS NOT NULL AND bm.hardcover_book_id<>'' "
-    "AND (bm.series_name IS NULL OR bm.series_name='') "
-    "AND bm.isbn_13 IS NOT NULL AND LENGTH(REPLACE(bm.isbn_13,'-',''))=13 "
-    # RAND() so a residual set of stuck/standalone ungrouped books can't permanently
-    # monopolise the per-run cap and starve newly-ungrouped books of a survey slot.
-    "ORDER BY RAND() LIMIT {limit};"
-)
-
-
-def _series_books():
-    out, rows = grimmory._db(_SQL), []
-    for line in out.splitlines():
-        c = line.split("\t")
-        if len(c) < 8:
-            continue
-        rows.append({"book_id": int(c[0]), "title": c[1], "hcid": c[2].strip(),
-                     "series_name": c[3], "series_number": c[4].strip(),
-                     "isbn": c[5].strip(), "num_locked": c[6] == "1", "name_locked": c[7] == "1"})
-    return rows
-
-
-def _ungrouped_candidates(limit):
-    """hcid'd books with a clean 13-char ISBN but no series_name — possible
-    ungrouped series members (Symptom 1). Bounded: the cap keeps the nightly
-    Hardcover lookups cheap; healed books gain a name and drop out next run."""
-    if not limit:
-        return []
-    out, rows = grimmory._db(_UNGROUPED_SQL.format(limit=int(limit))), []
-    for line in out.splitlines():
-        c = line.split("\t")
-        if len(c) < 5:
-            continue
-        rows.append({"book_id": int(c[0]), "title": c[1], "hcid": c[2].strip(),
-                     "series_name": "", "series_number": "", "isbn": c[3].strip(),
-                     "num_locked": False, "name_locked": c[4] == "1"})
-    return rows
-
 
 def _as_float(s):
     try:
@@ -217,6 +164,12 @@ def audit_one(b, hcid_counts):
     if not b["series_name"]:
         if not hc_series:
             return "no-series", "standalone — no series in grimmory or Hardcover", None
+        # Every fix below writes on the assumption the hcid is right; require the book
+        # TITLE to corroborate it (near-exact) before deriving anything from it.
+        if not (cand.get("title") and matcher._title_match_strict(b["title"], cand["title"])):
+            return ("series-mismatch",
+                    f"ungrouped, but title {b['title']!r} does not corroborate hcid "
+                    f"{cand.get('title')!r} — identity suspect (resolver)", None)
         if b.get("name_locked"):
             return "series-name-missing", f"ungrouped from {hc_series!r} (series_name LOCKED — manual)", None
         if not hc_isbn:
@@ -244,13 +197,15 @@ def audit_one(b, hcid_counts):
             return ("manual",
                     f"series name {b['series_name']!r} is a corrupt form of {clean!r} — fix in grimmory or re-download",
                     None)
-        # Not a real series for this book. If the book TITLE corroborates the hcid, it's
-        # a stale/variant name — heal to canonical so grimmory re-derives the right one.
-        # If the title ALSO disagrees, the hcid itself is suspect (a real mis-seed): leave
+        # Not a real series for this book. If the book TITLE corroborates the hcid
+        # (near-exact — a loose match blesses "Foundation" carrying "Foundation and
+        # Empire"), it's a stale/variant name — heal to canonical so grimmory re-derives
+        # the right one. Otherwise the hcid itself is suspect (a real mis-seed): leave
         # it for the resolver, which validates the identity against candidates before lock.
-        if not (cand.get("title") and matcher._title_match(b["title"], cand["title"])):
+        if not (cand.get("title") and matcher._title_match_strict(b["title"], cand["title"])):
             return ("series-mismatch",
-                    f"grimmory series {b['series_name']!r} != hcid series {hc_series!r} → mis-seed (resolver)",
+                    f"grimmory series {b['series_name']!r} != hcid series {hc_series!r} "
+                    f"and title does not corroborate the hcid → mis-seed (resolver)",
                     None)
         if b["name_locked"]:
             return "series-name-variant", f"variant name {b['series_name']!r} → {hc_series!r} (series_name LOCKED — manual)", None
@@ -281,16 +236,23 @@ def audit_one(b, hcid_counts):
         fix = None
     elif not hc_isbn:
         reason += " (no canonical ISBN in Hardcover — can't heal)"
+    elif not (cand.get("title") and matcher._title_match_strict(b["title"], cand["title"])):
+        # The commonest mis-seed is the wrong VOLUME of the right series — same series
+        # name, different number. That is exactly a number-mismatch whose hcid title is
+        # a sibling title; healing it would lock the wrong book. Withhold the fix; the
+        # book stands in the nightly report until adjudicated (resolve --book <id>).
+        reason += f" (title does not corroborate hcid {cand.get('title')!r} — not auto-healed)"
+        fix = None
     return cat, reason, fix
 
 
 def run(limit=None, apply=False, g=None, store=None, ungrouped_limit=None, force=False):
-    books = _series_books()
+    books = grimmory.series_books()
     if limit:
         books = books[:limit]
     # Default cap walks the ungrouped set nightly; a targeted --limit mirrors it.
     ug_cap = ungrouped_limit if ungrouped_limit is not None else (limit or UNGROUPED_LIMIT)
-    books += _ungrouped_candidates(ug_cap)
+    books += grimmory.ungrouped_candidates(ug_cap)
     hcid_counts = defaultdict(int)
     for b in books:
         if b["hcid"]:
