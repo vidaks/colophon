@@ -41,6 +41,17 @@ def _same_work(a, b):
     return _canon(a) == _canon(b) or str(a.get("hcid")) == str(b.get("hcid"))
 
 
+def _authors_agree(req_authors, file_authors):
+    """True unless BOTH sides are known and disagree. The title fallback needs this:
+    two different works can share a title, and the author is the only requested signal
+    left to tell them apart. Reuses the loose token matcher — it handles 'Last, First'
+    orderings fine. Author name-forms vary wildly (initials vs full name, pen names,
+    translator lists), so a disagreement is grounds to HOLD, never to hard-reject."""
+    if not req_authors or not file_authors:
+        return True
+    return matcher._title_match(file_authors, req_authors)
+
+
 def _file_book_from_isbns(isbns):
     """First OPF ISBN that resolves to a Hardcover book → (isbn, book), else (None, None)."""
     for isbn in isbns:
@@ -99,10 +110,20 @@ def verify(requested, file_path):
                            f"requested hc#{req_hcid} did not resolve; file is hc#{file_hcid} {file_title!r} — cannot confirm same work",
                            source="req-unresolved", isbn=isbn, file_hcid=file_hcid, file_title=file_title)
         if req_title:
-            same = matcher._title_match(file_title or "", req_title)
-            verdict = MATCH if same else MISMATCH
-            rel = "~ requested title" if same else "!= requested title"
-            return _result(verdict, 0.80 if same else 0.75,
+            file_auth = ", ".join(file_book.get("authors") or []) or None
+            title_ok = matcher._title_match(file_title or "", req_title)
+            if title_ok and not _authors_agree(requested.get("authors"), file_auth):
+                # Title agrees but the author string doesn't loosely match — could be a
+                # same-titled different work OR just "J.R.R." vs "John Ronald Reuel".
+                # Only a HOLD is safe: a MISMATCH here hard-deletes a correct grab.
+                return _result(UNVERIFIABLE, 0.0,
+                               f"file ISBN {isbn} -> hc#{file_hcid} {file_title!r} ~ requested title, "
+                               f"but by {file_auth!r}, not {requested['authors']!r} — held",
+                               source="author-mismatch", isbn=isbn, file_hcid=file_hcid,
+                               file_title=file_title)
+            verdict = MATCH if title_ok else MISMATCH
+            rel = "~ requested title" if title_ok else "!= requested title"
+            return _result(verdict, 0.80 if title_ok else 0.75,
                            f"file ISBN {isbn} -> hc#{file_hcid} {file_title!r} {rel} {req_title!r} (no id given)",
                            source="isbn-title", isbn=isbn, file_hcid=file_hcid, file_title=file_title)
         return _result(UNVERIFIABLE, 0.0, "no requested identity supplied", source="no-request")
@@ -155,9 +176,18 @@ def verify(requested, file_path):
                        f"file adjudicated -> hc#{chosen} {file_title!r}; requested hc#{req_hcid} or chosen work did not resolve — cannot confirm same work",
                        source="req-unresolved", file_hcid=chosen, file_title=file_title)
     if req_title:
-        same = matcher._title_match(file_title or "", req_title)
-        verdict = MATCH if same else MISMATCH
-        rel = "same work as" if same else "different work from"
+        # The proposal carries the chosen candidate's authors (resolver includes them),
+        # so no second provider roundtrip is needed here.
+        file_auth = ", ".join(prop.get("authors") or []) or None
+        title_ok = matcher._title_match(file_title or "", req_title)
+        if title_ok and not _authors_agree(requested.get("authors"), file_auth):
+            # Same hold-not-reject rule as the deterministic path above.
+            return _result(UNVERIFIABLE, 0.0,
+                           f"file adjudicated -> hc#{chosen} {file_title!r} ~ requested title, "
+                           f"but by {file_auth!r}, not {requested['authors']!r} — held",
+                           source="author-mismatch", file_hcid=chosen, file_title=file_title)
+        verdict = MATCH if title_ok else MISMATCH
+        rel = "same work as" if title_ok else "different work from"
         return _result(verdict, round(min(conf, 0.9), 2),
                        f"file adjudicated -> hc#{chosen} {file_title!r}; {rel} requested",
                        source="llm-adjudicated", file_hcid=chosen, file_title=file_title)

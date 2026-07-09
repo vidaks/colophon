@@ -122,6 +122,43 @@ class Verify(unittest.TestCase):
                  isbn_map={"978": _book("438682", "The Rise of Endymion")})
         self.assertEqual(r["verdict"], verify.MISMATCH)
 
+    def test_title_fallback_author_disagreement_holds(self):
+        # Two works can share a title; a disagreeing author makes the match suspect,
+        # but author name-forms vary too much for a hard reject — HOLD, never MISMATCH
+        # (a MISMATCH would delete a correct grab over "J.R.R." vs "John Ronald Reuel").
+        r = _run({"title": "Hooked", "authors": "Nir Eyal"}, {"opf_isbns": ["978"]},
+                 isbn_map={"978": {**_book("5", "Hooked"), "authors": ["Emily McIntire"]}})
+        self.assertEqual(r["verdict"], verify.UNVERIFIABLE)
+        self.assertEqual(r["source"], "author-mismatch")
+        self.assertIn("Emily McIntire", r["reason"])
+
+    def test_title_fallback_author_agreement_matches(self):
+        r = _run({"title": "Hooked", "authors": "Nir Eyal"}, {"opf_isbns": ["978"]},
+                 isbn_map={"978": {**_book("5", "Hooked"), "authors": ["Nir Eyal"]}})
+        self.assertEqual(r["verdict"], verify.MATCH)
+
+    def test_title_fallback_author_name_form_variance_still_matches(self):
+        # Loose author matching tolerates ordering ("Last, First") — shared surname
+        # token satisfies the overlap rule.
+        r = _run({"title": "Hooked", "authors": "Eyal, Nir"}, {"opf_isbns": ["978"]},
+                 isbn_map={"978": {**_book("5", "Hooked"), "authors": ["Nir Eyal"]}})
+        self.assertEqual(r["verdict"], verify.MATCH)
+
+    def test_title_fallback_author_unknown_degrades_to_title(self):
+        # File side has no authors — the check degrades to title-only, never blocks.
+        r = _run({"title": "Hooked", "authors": "Nir Eyal"}, {"opf_isbns": ["978"]},
+                 isbn_map={"978": _book("5", "Hooked")})
+        self.assertEqual(r["verdict"], verify.MATCH)
+
+    def test_llm_title_fallback_author_disagreement_holds(self):
+        # Authors come from the proposal itself (resolver carries them) — no re-fetch.
+        sig = {"opf_isbns": [], "opf_title": "Hooked", "opf_author": "X"}
+        prop = {"action": "propose", "chosen_id": "5", "chosen_title": "Hooked",
+                "authors": ["Emily McIntire"], "confidence": 0.92}
+        r = _run_llm({"title": "Hooked", "authors": "Nir Eyal"}, sig, prop)
+        self.assertEqual(r["verdict"], verify.UNVERIFIABLE)
+        self.assertEqual(r["source"], "author-mismatch")
+
     def test_req_unresolved_holds_not_mismatch(self):
         # Requested work fails to resolve (provider hiccup) AND the file's id differs:
         # must HOLD (unverifiable), never MISMATCH — id-equality alone would wrongly
