@@ -18,26 +18,13 @@ Dry-run by default; --apply submits the refresh. The refresh is precondition-gat
 """
 import os
 
-from . import grimmory
+from .grimmory import unseeded_ids  # module attribute on purpose: tests stub enrich.unseeded_ids
 from .heal import assert_preconditions
 
 # Mark an un-seeded book stuck after this many failed sweeps. Default 6 ≈ 3h at the
 # deployed 30-min cadence — long enough to ride out a Hardcover 429/outage, short
 # enough to surface same-day. Tunable via the environment.
 STUCK_AFTER = int(os.environ.get("COLOPHON_ENRICH_STUCK_AFTER", "6"))
-
-# Books that still lack a Hardcover id (the bare watch-imports), excluding
-# soft-deleted ones. Locks are irrelevant — an un-seeded book has no identity to
-# protect.
-_UNSEEDED = (
-    "SELECT bm.book_id FROM book_metadata bm JOIN book b ON b.id=bm.book_id "
-    "WHERE (bm.hardcover_book_id IS NULL OR bm.hardcover_book_id='') "
-    "AND (b.deleted IS NULL OR b.deleted=0) ORDER BY bm.book_id;"
-)
-
-
-def unseeded_ids():
-    return [int(x) for x in grimmory._db(_UNSEEDED).split()]
 
 
 def run_enrich(g, store, apply=False, stuck_after=STUCK_AFTER):
