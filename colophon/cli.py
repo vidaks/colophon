@@ -29,9 +29,10 @@ def _fmt(snap, keys=("title", "series_name", "series_number", "isbn_13",
 
 def _reports_dir():
     """Directory reports are written to (created if missing). COLOPHON_REPORTS
-    overrides the repo-relative default."""
-    d = os.environ.get("COLOPHON_REPORTS") or os.path.abspath(
-        os.path.join(os.path.dirname(__file__), os.pardir, "reports"))
+    overrides; the default sits next to the changelog (checkout root, or XDG state
+    for a packaged install)."""
+    from .store import state_dir
+    d = os.environ.get("COLOPHON_REPORTS") or os.path.join(state_dir(), "reports")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -114,8 +115,7 @@ def cmd_backfill(args, g, store):
             return 2
     res = backfill_run(g, store, limit=args.limit, apply=apply)
     mode = "APPLIED" if apply else "DRY-RUN (no writes)"
-    print(f"[{mode}] backfill {res['run_id']}  epoch {res['epoch']}  "
-          f"({len(res['proposals'])} books surveyed)")
+    print(f"[{mode}] backfill {res['run_id']}  ({len(res['proposals'])} books surveyed)")
     print("  summary:", res["summary"])
     if apply:
         print(f"  healed={res['healed']} errors={res['errors']} aborted={res['aborted']}")
@@ -332,12 +332,19 @@ def main(argv=None):
     ve.add_argument("--author", help="requested author(s), used with --title")
     args = p.parse_args(argv)
 
-    g, store = Grimmory(), Store()
-    fn = {"precheck": cmd_precheck, "heal": cmd_heal, "log": cmd_log,
-          "revert": cmd_revert, "backfill": cmd_backfill, "enrich": cmd_enrich,
-          "audit": cmd_audit, "resolve": cmd_resolve, "series-audit": cmd_series_audit,
-          "oversight": cmd_oversight, "maintain": cmd_maintain,
-          "verify": cmd_verify}[args.cmd]
+    # One registry: (handler, what it needs). Build only what the command needs —
+    # `verify` runs in the acquisition gate's context and `audit` reads the server DB
+    # directly; neither may create a stray changelog file just by being dispatched.
+    fn, needs = {
+        "precheck": (cmd_precheck, "g"), "heal": (cmd_heal, "gs"),
+        "log": (cmd_log, "s"), "revert": (cmd_revert, "gs"),
+        "backfill": (cmd_backfill, "gs"), "enrich": (cmd_enrich, "gs"),
+        "audit": (cmd_audit, ""), "resolve": (cmd_resolve, "gs"),
+        "series-audit": (cmd_series_audit, "gs"), "oversight": (cmd_oversight, "s"),
+        "maintain": (cmd_maintain, "gs"), "verify": (cmd_verify, ""),
+    }[args.cmd]
+    g = Grimmory() if "g" in needs else None
+    store = Store() if "s" in needs else None
     try:
         return fn(args, g, store)
     except (GrimmoryError, PreconditionError) as e:

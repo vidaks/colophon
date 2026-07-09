@@ -10,15 +10,40 @@ import sqlite3
 import time
 from contextlib import contextmanager
 
-# Repo-relative by default; COLOPHON_DB overrides it (e.g. a persistent path for a
-# deployed service). Unset keeps the historical <repo>/colophon.db location.
-DB_PATH = os.environ.get("COLOPHON_DB") or os.path.join(
-    os.path.dirname(__file__), os.pardir, "colophon.db")
+def _checkout_root():
+    """The repo root when running from a checkout, else None. A pip/pipx install
+    doesn't ship pyproject.toml next to the package — that's the discriminator."""
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    return root if os.path.exists(os.path.join(root, "pyproject.toml")) else None
+
+
+def state_dir():
+    """Where local state lands without an explicit override: the checkout root when
+    run in place (the historical location), else XDG state (~/.local/state/colophon)
+    — never inside site-packages, which a pipx venv makes read-only-ish and hides.
+
+    Compat: an install that already has a colophon.db at the old package-parent
+    location keeps using it — the changelog is the only recovery mechanism, and a
+    path change on upgrade must not silently orphan it. Only FRESH installs land
+    in XDG state."""
+    root = _checkout_root()
+    if root:
+        return root
+    legacy = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    if os.path.exists(os.path.join(legacy, "colophon.db")):
+        return legacy
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "colophon")
+
+
+# COLOPHON_DB overrides (e.g. a persistent path for a deployed service).
+DB_PATH = os.environ.get("COLOPHON_DB") or os.path.join(state_dir(), "colophon.db")
 
 
 class Store:
     def __init__(self, path=DB_PATH):
         self.path = os.path.abspath(path)
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with self._conn() as c:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS changes(
@@ -35,7 +60,6 @@ class Store:
                     target_json TEXT
                 )"""
             )
-            c.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
             # Mis-seeds the resolver could not place (no match, or a match below the
             # auto-apply threshold). Keyed by book; `fingerprint` is the normalized
             # title+author the resolve query was built from — if the book's title or
@@ -106,27 +130,16 @@ class Store:
                 )"""
             )
 
-    def epoch(self):
-        """Re-audit epoch. Settled (locked) books are only re-opened when this is
-        bumped (i.e. when the matcher logic materially improves)."""
-        with self._conn() as c:
-            r = c.execute("SELECT value FROM meta WHERE key='epoch'").fetchone()
-            return int(r["value"]) if r else 1
-
-    def bump_epoch(self):
-        e = self.epoch() + 1
-        with self._conn() as c:
-            c.execute("INSERT INTO meta(key,value) VALUES('epoch',?) "
-                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(e),))
-        return e
-
     @contextmanager
     def _conn(self):
         """A connection that commits on clean exit and ALWAYS closes — the bare
         sqlite3 context manager commits but leaks the handle (fd leak + a noisy
-        ResourceWarning in the long-running maintain process)."""
-        c = sqlite3.connect(self.path)
+        ResourceWarning in the long-running maintain process). timeout=30 is the
+        busy handler: the 30-min enrich timer and the nightly maintain can overlap
+        on this file, and WAL lets the reader side proceed while one writes."""
+        c = sqlite3.connect(self.path, timeout=30.0)
         c.row_factory = sqlite3.Row
+        c.execute("PRAGMA journal_mode=WAL")
         try:
             yield c
             c.commit()

@@ -1,5 +1,7 @@
 # Local state — never commit (library contents + the only recovery store)
 colophon.db
+colophon.db-wal
+colophon.db-shm
 reports/
 
 # Secrets / local config
