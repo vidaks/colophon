@@ -1,38 +1,21 @@
 # Security Policy
 
-## Supported versions
+## Supported Versions
 
-This is a personal project; only the latest `main` is supported. Fixes land there.
+Only the latest commit on the `main` branch is actively supported. Security fixes land directly on `main`.
 
-## Reporting a vulnerability
+## Reporting a Vulnerability
 
-Please report security issues **privately**, not in a public issue:
+Please report security issues privately rather than opening a public issue:
 
-- Use GitHub's **[Report a vulnerability](https://github.com/vidaks/colophon/security/advisories/new)**
-  (Security → Advisories), or
-- open a minimal public issue asking for a private contact channel — without details.
+- Use GitHub's **[Report a vulnerability](https://github.com/vidaks/colophon/security/advisories/new)** feature under Security -> Advisories.
+- Alternatively, open a minimal public issue requesting a private contact channel without disclosing vulnerability details.
 
-Expect a best-effort response. There is no bounty.
+## Security Model and Expectations
 
-## Security model & expectations
+Colophon handles API credentials and performs updates on a live book server. Keep the following practices in mind:
 
-Colophon holds credentials and writes to a live library. The design keeps the blast
-radius small, but operators carry real responsibility:
-
-- **Secrets live only in the environment.** API keys (Hardcover, Anthropic) and the SMTP
-  password are read from environment variables (see `.env.example`) and are never inlined
-  in the code, written to the changelog, or printed. Keep `.env` out of version control
-  (it is git-ignored) and `0600`.
-- **Admin token / server exposure.** Colophon mints an admin token from the server's
-  remote-auth endpoint using a trusted-header identity. That endpoint trusts whoever can
-  reach it, so the **server's API port must not be exposed** to untrusted networks — bind
-  it to loopback / a trusted bridge and front it with your auth proxy. Treat the minted
-  token as a secret for its lifetime.
-- **Third-party data flow.** `resolve` and `series-audit` send book titles/authors to
-  Hardcover and (for `resolve`) Anthropic. This is inherent to the feature; do not run it
-  on data you cannot share with those providers.
-- **Destructive operations.** `--apply` writes; `dedup` deletes records (file preserved as
-  an alternative format, but not changelog-revertible). Run dry-run first; keep backups.
-
-Reporting a way to bypass the files-never-touched precondition, leak a secret, or escalate
-the minted token beyond intended scope is especially appreciated.
+- **Secrets in environment variables:** API keys (Hardcover, Anthropic) and SMTP credentials are read strictly from environment variables. They are never written to the database changelog, printed in logs, or committed to version control. Restrict `.env` file permissions to `0600`.
+- **Server API exposure:** Colophon authenticates with the book server by requesting an admin token from the remote authentication endpoint using trusted headers. Because that endpoint trusts incoming requests, do not expose the book server's API port to untrusted networks. Bind the service to localhost or an isolated internal container bridge behind your authentication proxy. Treat generated session tokens as sensitive secrets.
+- **Third-party data transfer:** Commands such as `resolve` and `series-audit` transmit book titles and author names to Hardcover and Anthropic APIs. Do not run these features on library catalogs containing sensitive data that you cannot share with third-party services.
+- **Safe operation:** Always preview changes with dry-run mode before applying updates with `--apply`. Maintain regular backups of your book server database.

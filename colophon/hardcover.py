@@ -1,10 +1,8 @@
-"""Hardcover access (read-only).
+"""Hardcover API client (read-only).
 
 Reads the API key from `COLOPHON_HARDCOVER_KEY` (or `HARDCOVER_API_KEY`) and calls
-the API directly. Optionally, if `COLOPHON_HARDCOVER_QUERY_CMD` is set, the key is
-never read into this process: that command is run with the GraphQL on stdin and must
-return the JSON response (useful when the key lives in a secrets manager). A leading
-`Bearer ` on the key is stripped (some stores keep it prefixed).
+the Hardcover GraphQL API. Alternatively, if `COLOPHON_HARDCOVER_QUERY_CMD` is set,
+executes that command with the GraphQL query on stdin and parses the JSON response.
 """
 import json
 import os

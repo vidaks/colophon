@@ -1,10 +1,9 @@
-"""EPUB inspection — read-only, standard library only.
+"""EPUB inspection: read-only metadata extraction using the standard library.
 
-Pulls the two identity signals colophon falls back on when title/author resolution
-is weak: the OPF `dc:identifier` ISBN(s) — deterministic, free — and the book's
-colophon / copyright page text, for the Haiku adjudicator (the printed *print* ISBN
-there often matches Hardcover's canonical edition better than the OPF ebook ISBN).
-Never raises for a malformed/DRM'd file: returns None.
+Extracts two signals when online title and author matching confidence is low:
+the OPF package identifier ISBNs, and copyright page text for language model
+comparison.
+Malformed or DRM-protected files return None rather than raising exceptions.
 """
 import os
 import re

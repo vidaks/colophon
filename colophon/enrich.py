@@ -1,20 +1,16 @@
-"""Phase 1a' — seed bare watch-imports, and remember the ones that never match.
+"""Initial metadata enrichment for newly imported books.
 
-Fresh grabs land via the library *watch* with embedded metadata only; grimmory
-does NOT auto-enrich watch-imports, so a book with no Hardcover id never joins its
-series or drops from the missing list until something nudges it. This submits a
-Hardcover-first REPLACE_MISSING refresh for the un-seeded books — light and
-rate-limit-friendly (it never touches the already-seeded library).
+Newly imported books often arrive with embedded file metadata only and lack an
+external provider identifier. The server does not automatically query Hardcover
+for watch directory imports, leaving these books without series or provider links.
+This module triggers a REPLACE_MISSING refresh for unlinked books.
 
-The problem this module adds memory for: a book with no usable ISBN (or a
-self-pub/KDP edition Hardcover does not carry) can NEVER seed, so a memory-less
-sweep re-poked the same books every 30 minutes forever (tens of metadata refreshes
-a day on days with no new books). Here each sweep records its observations; after
-`stuck_after` failed sweeps a book is marked stuck — dropped from the sweep so the
-churn stops, and surfaced ONCE in the daily digest for the human to delete or keep.
+To prevent infinite retries for books that cannot be matched (such as self-published
+works or books lacking valid ISBNs), each sweep records its observations. After
+`stuck_after` failed attempts, a book is marked as stuck, excluded from future
+sweeps, and reported once in the daily summary for manual review.
 
-Dry-run by default; --apply submits the refresh. The refresh is precondition-gated
-(book files are never touched) just like every other colophon write.
+Dry-run by default; --apply submits the refresh request to the server.
 """
 import os
 

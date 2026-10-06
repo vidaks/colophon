@@ -1,9 +1,10 @@
-"""Stage 2 — Haiku resolver for mis-seeds (propose-only).
+"""Resolve misidentified books using Hardcover search and language model adjudication.
 
-For a flagged mis-seed: search Hardcover by title+author, hand Haiku the candidates
-(+ the book) with their popularity/pages/compilation signals, and get the correct
-identity or NONE. Validates the chosen id against the candidate set (no invented
-ids). Proposes; writes nothing. Auto-apply is a later, agreement-gated stage.
+For books where local metadata disagrees with the current provider match:
+searches Hardcover by title and author, supplies candidates to the language model
+along with popularity and page counts, and determines the matching work.
+The selected ID is strictly validated against the candidate set to prevent
+hallucinations.
 """
 import json
 import os

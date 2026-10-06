@@ -1,9 +1,8 @@
-"""grimmory REST client + read-only book snapshot.
+"""REST client and database snapshot utilities for Booklore-family servers (grimmory/Edda).
 
-Writes/refresh/settings go through grimmory's API (the standalone path). Book-state
-snapshots are read read-only from the rootful grimmory-db container (on-host, no
-password) — simpler and more reliable than reverse-engineering a single-book
-metadata GET, and the plan permits read-only DB access on the host.
+All writes, refreshes, and setting changes execute through the server REST API.
+Fast read-only library surveys and state snapshots query the database container
+directly.
 """
 import json
 import os
@@ -17,10 +16,9 @@ import urllib.request
 GRIMMORY_URL = os.environ.get("GRIMMORY_URL", "http://localhost:6060/api/v1")
 ADMIN_USER = os.environ.get("COLOPHON_ADMIN_USER", "admin")
 ADMIN_GROUP = os.environ.get("COLOPHON_ADMIN_GROUP", "admin")
-# Shared secret the trusted reverse proxy sends in X-Edda-Proxy-Auth; the Edda
-# fork honors the Remote-* headers only when it matches (plexarr plan 24 F1).
-# colophon mints from the host (not through the proxy), so it presents the secret
-# directly. Unset = omit the header (works against an unguarded/upstream server).
+# Shared secret sent in X-Edda-Proxy-Auth for proxy verification. When set,
+# the server requires this secret to authorize Remote-User token generation.
+# Unset = omit the header (for servers that do not require proxy secrets).
 PROXY_AUTH_SECRET = os.environ.get("COLOPHON_PROXY_AUTH_SECRET", "")
 DB_CONTAINER = os.environ.get("COLOPHON_DB_CONTAINER", "grimmory-db")
 DB_NAME = os.environ.get("COLOPHON_DB_NAME", "grimmory")

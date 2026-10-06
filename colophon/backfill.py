@@ -1,7 +1,7 @@
-"""Backfill: survey books needing attention, propose via the matcher, then dry-run
-(write nothing) or apply (gated). Settled (locked) books are excluded by the survey —
-set-once means they are never re-litigated. Rate-limited, with a circuit-breaker that
-aborts on a high error rate.
+"""Backfill: identify books with missing or broken ISBNs, propose fixes, and apply updates.
+
+Books with locked fields are excluded from the survey. Includes rate limiting and
+aborts automatically if repeated errors occur during a run.
 """
 from collections import Counter
 

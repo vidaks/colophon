@@ -1,30 +1,26 @@
-"""Plan 20 Phase 3 — whole-library series-numbering audit (read-only by default).
+"""Whole-library series numbering and grouping audit.
 
-Compares each owned book's grimmory (series_name, series_number) against Hardcover's
-authoritative (series, book_series.position). A wrong number is almost always a wrong
-*edition* (a foreign/alt ISBN whose embedded series position differs) — so the fix is
-the SAME proven heal as everything else: set the canonical ISBN + hcid, lock, refresh,
-and grimmory repopulates series_number from Hardcover's position (verified live on book
-590 "Zero Hour": German-edition ISBN → number 2; heal → canonical ISBN → number 5).
+Compares each owned book's series name and volume number against Hardcover's
+series and position data. An incorrect series number or missing name usually
+reflects a mismatched edition or unlinked series membership. Colophon can update
+these records by writing the canonical ISBN and provider IDs, locking the record,
+and triggering a metadata refresh.
 
-Runs as a guarded phase of the nightly sweep (`maintain`) and standalone via
-`series-audit` (read-only unless `--apply`). `--apply` heals the clean cases —
-number-mismatch / number-missing and the grouping repairs series-name-missing /
-series-name-variant — gated, dry-run by default. Only a *true* mis-seed
-(series-mismatch: the name AND the title disagree with the hcid) stays deferred
-to the resolver, which validates the identity against candidates before locking.
+Runs as part of `maintain` or standalone via `series-audit` (read-only unless `--apply`).
+With `--apply`, it corrects unambiguous number mismatches, missing numbers, and
+unlinked series names.
 
 Categories:
-  number-mismatch     : series matches, grimmory number != Hardcover position  → FIX (heal)
-  number-missing      : series matches, grimmory number null, Hardcover has one → FIX (heal)
-  series-name-missing : grimmory has no series_name, Hardcover puts it in one   → FIX (heal)
-  series-name-variant : name differs but the book TITLE matches the hcid        → FIX (heal)
-  series-mismatch     : name AND title differ → the hcid itself is suspect       → resolver
-  dup-overlap         : hcid shared with another owned book                      → plan 21
-  no-position         : Hardcover has no position for this id                    → leave
-  no-series           : no series in grimmory or Hardcover (standalone)          → leave
-  no-hcid             : in a series but unidentified                            → leave
-  number-ok           : grimmory number == Hardcover position
+  number-mismatch     : series matches, local number differs from Hardcover position -> fix
+  number-missing      : series matches, local number missing, Hardcover has position  -> fix
+  series-name-missing : missing series name locally, Hardcover assigns a series       -> fix
+  series-name-variant : series name differs slightly, but title matches               -> fix
+  series-mismatch     : series name and title differ from provider                    -> resolver
+  dup-overlap         : provider ID shared with another owned book                    -> duplicate
+  no-position         : provider record specifies no position                         -> leave
+  no-series           : standalone title not in any series                            -> leave
+  no-hcid             : in a series locally but lacks provider ID                     -> leave
+  number-ok           : local series number matches provider position
 
 The `series-name-missing` path (Symptom 1 — owned books that fall out of their
 series because grimmory never derived a `series_name`) heals two ways. When the
@@ -153,7 +149,7 @@ def audit_one(b, hcid_counts):
     if not hcid:
         return "no-hcid", "in a series but no Hardcover id", None
     if hcid_counts.get(hcid, 0) > 1:
-        return "dup-overlap", f"hcid {hcid} shared with another owned book → dedup (plan 21)", None
+        return "dup-overlap", f"hcid {hcid} shared with another owned book (duplicate)", None
     cand = audit._book_by_id(hcid)
     if isinstance(cand, tuple):
         return "error", f"hardcover lookup failed: {cand[1][:50]}", None
@@ -344,7 +340,7 @@ _LABEL = {"manual": "Unfixable — needs a manual fix / re-download",
           "series-name-missing": "Ungrouped — missing series name (heal-fixable)",
           "series-name-variant": "Variant series name (heal-fixable)",
           "series-mismatch": "Series mismatch → mis-seed (resolver)",
-          "dup-overlap": "Duplicate hcid → dedup (plan 21)",
+          "dup-overlap": "Duplicate provider ID (duplicate)",
           "no-position": "Hardcover has no position (leave)",
           "no-series": "Standalone — not in any series (leave)",
           "no-hcid": "Unidentified in a series (leave)",

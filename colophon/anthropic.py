@@ -1,10 +1,9 @@
-"""Haiku adjudication.
+"""Language model candidate adjudication using Claude Haiku.
 
-Deployed: direct Anthropic Messages API (`ANTHROPIC_API_KEY` from the vault via
-env), structured output via a forced tool. Dev: the `claude` CLI (existing Claude
-Code auth, no key needed) with `--json-schema`. The model only *selects* among
-provided candidates and never originates an identifier — the caller validates the
-chosen id against the candidate set (no hallucinated ids).
+Supports two authentication paths: the Anthropic Messages API using ANTHROPIC_API_KEY,
+or the local `claude` CLI tool using existing login credentials.
+The model selects only among supplied candidates and cannot create new identifiers.
+The caller validates the chosen ID against the candidate set.
 """
 import json
 import os

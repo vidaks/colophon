@@ -4,154 +4,146 @@
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![CI](https://github.com/vidaks/colophon/actions/workflows/ci.yml/badge.svg)](https://github.com/vidaks/colophon/actions/workflows/ci.yml)
 
-**An autonomous library-metadata healer for [Booklore](https://github.com/booklore-app/booklore)-family
-book servers.** Colophon finds books whose metadata is wrong — broken ISBNs, the wrong
-edition, a mis-identified work, a bad series number, duplicates — and fixes them by
-resolving the *correct identity* and letting the server re-derive everything else. It
-runs hands-off on a schedule, never touches your book files, logs every change, and
-uses a small LLM only as a *validated adjudicator*, never as an author of record.
+Colophon is an automated metadata tool for ebook servers in the [Booklore](https://github.com/booklore-app/booklore) family, including the grimmory/Edda fork. It finds books with incorrect or missing metadata, resolves their canonical identity on [Hardcover](https://hardcover.app), and locks the verified fields so the server can refresh title, author, series, and cover art.
 
-> **Heads-up:** Colophon writes to (and can delete records from) a live library. It is
-> **dry-run by default**; `--apply` is what writes. Read [Safety](#safety) before you use it.
+Colophon runs unattended on a schedule, never alters original book files, logs every change to a local SQLite database, and can revert previous updates. When matching ambiguous titles, it can optionally use a small language model to select among retrieved Hardcover search results. The model only chooses from real candidates and never invents identifiers.
+
+All commands run in dry-run mode by default. Changes are written only when you pass the `--apply` flag.
 
 ---
 
 ## Why it exists
 
-Book servers import files with whatever metadata is embedded — often a foreign edition,
-an ASIN-as-title, or a half-right match. The fix is almost never "edit fields by hand";
-it's "pin the book to its *correct edition* and let the server refill from there." Colophon
-automates exactly that: **resolve the canonical identity (ISBN + provider id), lock it,
-trigger a refresh** — and the server fills in title, series, number, author, cover. The
-lock pins the edition, so a healed book *stays* healed (set-once, no oscillation).
+Ebook managers often import files with incomplete or inaccurate embedded metadata. An import may have a missing ISBN, a foreign edition, or an ASIN listed as a title.
 
-## What it does
+Fixing these issues by editing individual text fields by hand takes time and easily breaks on the next metadata sync. Colophon takes a different approach: it identifies the canonical edition of the book, writes the verified ISBN and Hardcover ID to the server, and locks those fields. Colophon then requests a metadata refresh from the server. The server retrieves the correct title, author, series details, page count, and cover image from Hardcover. Because the identity fields remain locked, subsequent library scans preserve the corrected data.
 
-- **Backfill** — books with a correct provider id but a broken/missing ISBN → set the
-  canonical ISBN, lock, refresh.
-- **Enrich** — bare imports that arrive with *no* provider id → submit a missing-only
-  refresh so they seed. Books that can never match (no/odd ISBN, self-published editions
-  the provider lacks) are remembered after a few failed sweeps, dropped from the sweep, and
-  surfaced **once** in the daily summary with a link — delete or keep, your call.
-- **Resolve** — mis-identified books (title disagrees with the matched work). Searches
-  the metadata provider for candidates and asks an LLM to pick the *same work* — but only
-  from the retrieved set, validated against it (the model can never invent an id), and
-  only auto-applies above a confidence threshold. Below it, or on doubt: left flagged.
-- **Series audit** — compares each book's series number *and* grouping against the provider's
-  authoritative series, and heals genuine mismatches: a wrong/missing number, an ungrouped book (no
-  series name), or a variant series name where the title still matches the provider. A true mis-seed
-  (name *and* title disagree) is left for the resolver. Read-only by default; runs nightly.
-- **Dedup (audit-only)** — the `audit` report groups duplicate records and names a
-  suggested keeper (largest file; newest on a tie). Collapsing them is left to you —
-  Colophon never deletes or merges records on its own.
-- **Oversight** — a weekly changelog review that flags drift (a book healed more than
-  once = convergence failing; sustained error rate) and emails you *only when flagged*.
+## Features
 
-## How it works (the mechanism)
+- **Backfill:** Finds books that already have a Hardcover ID but lack a valid ISBN. It fetches the canonical ISBN, locks the record, and triggers a refresh.
+- **Enrich:** Triggers initial metadata lookups for newly imported books that lack a provider ID. Books that fail to match after several attempts are marked as stuck and listed in a summary report for manual review.
+- **Resolve:** Identifies books where the local title disagrees with the current provider match. Colophon searches Hardcover for candidates and can use a language model (such as Claude Haiku) to select the correct edition from the returned results. Updates only apply when the match meets a high confidence threshold.
+- **Series audit:** Compares series titles and volume numbers against Hardcover series data. It corrects missing volume numbers, fixes mismatched numbers, and assigns ungrouped books to their series.
+- **Duplicate audit:** Finds potential duplicate books in the library and highlights a recommended copy to keep based on file size and import date. Colophon only reports duplicates; it never deletes or merges records automatically.
+- **Oversight:** Inspects the changelog weekly to detect repeated updates to the same book or elevated error rates. It sends an email notification only if an issue requires attention.
 
-The server matches editions by **ISBN** and re-derives metadata from a provider on
-refresh. So Colophon's whole job is to set the *right* identity and get out of the way:
+## How it works
 
-1. `PUT /books/{id}/metadata` — set `isbn13` + the provider book id, and **lock** them.
-2. Trigger `REFRESH_METADATA` (`REPLACE_ALL`, refresh covers) — the server refills
-   title / series / number / author / pages / cover from the locked edition.
+Booklore-based servers match book editions by ISBN and retrieve details from an external provider when refreshed. Colophon uses this design to fix metadata in two steps:
 
-Wrong metadata is almost always a *wrong edition*; pinning the canonical edition fixes
-the rest in one move. The lock makes it converge.
+1. Send a `PUT /books/{id}/metadata` request to set the ISBN-13 and Hardcover IDs, and lock those fields.
+2. Trigger a `REFRESH_METADATA` job with the `REPLACE_ALL` mode and cover refresh enabled.
+
+The server then repopulates all remaining metadata from the locked edition.
 
 ## Requirements
 
-- A running Booklore-family server (developed against the **grimmory/Edda** fork) reachable
-  over its REST API, with an admin identity.
-- A [Hardcover](https://hardcover.app) API key (the metadata provider).
-- *(optional, for `resolve`)* An [Anthropic](https://www.anthropic.com) API key — or the
-  `claude` CLI — for the LLM adjudicator (default model: Claude Haiku).
-- Python **3.9+**. Standard library only — **no third-party dependencies.**
+- A running Booklore-family server (such as the grimmory/Edda fork) with an accessible REST API and admin credentials.
+- A [Hardcover](https://hardcover.app) API key.
+- Python 3.9 or newer. Uses the standard library only, with no third-party runtime dependencies.
+- *(Optional, for `resolve`)* An [Anthropic](https://www.anthropic.com) API key, or the `claude` command-line tool, for automated candidate matching.
 
-## Install
+## Installation
+
+Install using `pipx` or `pip`:
 
 ```bash
-pipx install git+https://github.com/vidaks/colophon       # or: pip install .
-# or just run it in place — there are no dependencies:
-git clone https://github.com/vidaks/colophon && cd colophon
-python -m colophon.cli --help
+pipx install git+https://github.com/vidaks/colophon
 ```
 
-## Configure
+You can also run Colophon directly from a cloned repository without installing dependencies:
 
-Copy `.env.example` to `.env` and fill it in (or export the variables):
+```bash
+git clone https://github.com/vidaks/colophon
+cd colophon
+python3 -m colophon.cli --help
+```
 
-| variable | purpose |
+## Configuration
+
+Copy `.env.example` to `.env` and configure the settings for your environment:
+
+| Variable | Description |
 |---|---|
-| `GRIMMORY_URL` | server API base (default `http://localhost:6060/api/v1`) |
-| `COLOPHON_ADMIN_USER` / `COLOPHON_ADMIN_GROUP` | admin identity used to mint a token |
-| `COLOPHON_HARDCOVER_KEY` | Hardcover API key (or `COLOPHON_HARDCOVER_QUERY_CMD`) |
-| `ANTHROPIC_API_KEY` | LLM adjudication (omit to use the `claude` CLI) |
-| `COLOPHON_DB`, `COLOPHON_REPORTS` | where to write the changelog + reports |
-| `COLOPHON_RESOLVE_RETRY_DAYS` | re-query a cached-unresolvable mis-seed after N days (default `0` = never) |
-| `COLOPHON_BOOKS_ROOT` | host path of the library root; set it to let `resolve` inspect a below-threshold book's own EPUB (OPF ISBN + colophon). Unset ⇒ feature off |
-| `COLOPHON_BOOKSTORE_URL` | public UI base; set it to deep-link each stuck book in the digest (route `/book/<id>`). Unset ⇒ listed without links |
-| `COLOPHON_ENRICH_STUCK_AFTER` | mark a bare import stuck after N failed `enrich` sweeps (default `6`) |
-| `SMTP_*`, `OVERSIGHT_TO` | oversight + `maintain --email` summaries |
+| `GRIMMORY_URL` | Base URL of the book server API (default: `http://localhost:6060/api/v1`) |
+| `COLOPHON_ADMIN_USER` / `COLOPHON_ADMIN_GROUP` | Admin username and group used for authentication |
+| `COLOPHON_HARDCOVER_KEY` | Hardcover API key (or use `COLOPHON_HARDCOVER_QUERY_CMD`) |
+| `ANTHROPIC_API_KEY` | Anthropic API key for candidate resolution (optional if using `claude` CLI) |
+| `COLOPHON_DB`, `COLOPHON_REPORTS` | Storage paths for the SQLite changelog and generated reports |
+| `COLOPHON_RESOLVE_RETRY_DAYS` | Number of days before retrying previously unmatched books (default: `0`, never) |
+| `COLOPHON_BOOKS_ROOT` | Host path to the ebook library. When set, `resolve` can inspect local EPUB files for metadata if online matching confidence is low |
+| `COLOPHON_BOOKSTORE_URL` | Public web address of the book server. Used to generate links to books in summary reports |
+| `COLOPHON_ENRICH_STUCK_AFTER` | Number of failed match attempts before marking an import as stuck (default: `6`) |
+| `SMTP_*`, `OVERSIGHT_TO` | SMTP server settings and recipient address for status emails |
 
 ## Usage
 
+Run any command with `--help` to inspect its options:
+
 ```bash
-python -m colophon.cli precheck                 # assert the files-never-touched preconditions
-python -m colophon.cli backfill                 # survey + propose (dry-run)
-python -m colophon.cli backfill --apply         # heal broken ISBNs
-python -m colophon.cli enrich --apply           # seed bare no-id imports; remember the unresolvable
-python -m colophon.cli resolve --apply          # LLM-resolve mis-identified books (>= 0.9 conf)
-python -m colophon.cli resolve --force          # re-query the cached-unresolvable mis-seeds
-python -m colophon.cli series-audit             # series numbering + grouping report (read-only)
-python -m colophon.cli maintain --apply --email # backfill + resolve in one run + summary email
-python -m colophon.cli oversight --days 7       # weekly changelog review + verdict
-python -m colophon.cli log                      # the change history
-python -m colophon.cli revert <run_id> --apply  # undo a metadata run
+python3 -m colophon.cli --help
 ```
 
-Every subcommand is **dry-run unless `--apply`** is given.
+Common commands:
+
+```bash
+# Verify that server settings prevent direct file modifications
+python3 -m colophon.cli precheck
+
+# Preview missing and broken ISBN fixes (dry-run)
+python3 -m colophon.cli backfill
+
+# Apply ISBN fixes to the server
+python3 -m colophon.cli backfill --apply
+
+# Request initial metadata lookup for newly imported books
+python3 -m colophon.cli enrich --apply
+
+# Resolve misidentified books using Hardcover search and LLM adjudication
+python3 -m colophon.cli resolve --apply
+
+# Audit series names and volume numbers against Hardcover
+python3 -m colophon.cli series-audit
+
+# Run backfill, resolve, and series audits in one pass and email the summary
+python3 -m colophon.cli maintain --apply --email
+
+# Review recent changelog entries for errors or repeated updates
+python3 -m colophon.cli oversight --days 7
+
+# View recent metadata changes
+python3 -m colophon.cli log
+
+# Revert metadata changes made in a specific run
+python3 -m colophon.cli revert <run_id> --apply
+```
+
+All commands operate in dry-run mode unless you pass `--apply`.
 
 ## Safety
 
-Colophon is built to be trusted with an unattended, non-critical library — the design *is*
-the safety net (there is no human approval gate):
+Colophon is designed for unattended operation with strict safeguards:
 
-- **Your book files are never touched.** Before any write it asserts the server's
-  "save to original file" and "move files to library pattern" settings are **off**; if not,
-  it aborts and writes nothing. Only the server's regenerable metadata/DB changes.
-- **Dry-run by default.** Writes happen only with `--apply`.
-- **Everything is logged** to a SQLite changelog, and metadata heals are **reversible**
-  with `revert`.
-- **The LLM never originates an identifier** — it only *selects* among provider candidates,
-  and the choice is validated against that set. Low confidence ⇒ no change.
-- **Bounded blast radius** — per-run limits + a circuit-breaker that stops on repeated errors.
+- **Original files remain untouched:** Before writing any changes, Colophon verifies that server settings for saving metadata to original files and moving files into library folder patterns are turned off. If either setting is enabled, Colophon aborts immediately. All updates affect only the server database and cache.
+- **Dry-run by default:** Operations simulate changes and display proposals unless you pass the `--apply` flag.
+- **Audit log and rollback:** Every metadata update is recorded in a local SQLite changelog. You can inspect previous actions with `log` and revert changes with `revert`.
+- **Restricted matching:** When using a language model to resolve ambiguous books, the model can only choose among candidates retrieved from Hardcover. It cannot invent new identifiers. If match confidence is below the configured threshold, Colophon makes no changes.
+- **Rate limiting and error limits:** Execution halts automatically if repeated errors occur during a run.
 
-⚠️ **Two things to know:**
-1. **Not every write is `revert`-able.** Metadata *heals* are — that is what `revert`
-   replays. `enrich` is a missing-only refresh that fills empty fields on unidentified
-   books; it is additive and not changelog-tracked, so `revert` does not cover it.
-2. **Data leaves your machine.** `resolve` and `series-audit` send book titles/authors to
-   Hardcover and (for `resolve`) Anthropic. Don't run it on data you can't share with them.
+Keep two considerations in mind:
 
-Provided **as is**, without warranty (see [LICENSE](LICENSE)). Understand the above and keep
-backups.
+1. **Reverting changes:** The `revert` command restores metadata updates applied during `heal`, `backfill`, `resolve`, and `series-audit` runs. The `enrich` command only triggers an initial server metadata lookup for unidentified books and does not record prior state, so it cannot be undone with `revert`.
+2. **Third-party data:** Commands like `resolve` and `series-audit` send book titles and author names to Hardcover and Anthropic. Do not run these commands on libraries containing sensitive titles you do not wish to send to external APIs.
 
-## Portability
+## Architecture and Portability
 
-The metadata intelligence — candidate-search → LLM adjudication → validated, reversible,
-set-once writes → drift oversight — is generic. The server-specific integration lives behind
-one thin seam (`colophon/grimmory.py`): the REST/DB calls and the lock-then-refresh premise.
-Targeting a different Booklore-family server (or another book manager) means reimplementing
-that seam; the rest is reusable.
+Colophon keeps its matching logic separate from server communication. All interactions with the book server live in `colophon/grimmory.py`, which handles authentication, metadata updates, and database queries. Adapting Colophon to support another book manager requires implementing that module for the new server's API.
 
 ## Contributing
 
-Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and
-[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). This is a personal project maintained on a
-best-effort basis. Security reports: [SECURITY.md](SECURITY.md).
+Contributions and issue reports are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for details. Report security concerns according to [SECURITY.md](SECURITY.md).
 
 ## License
 
-[MIT](LICENSE). Colophon is an independent program that talks to the server over its network
-API; it is **not** a derivative of Booklore/Edda and carries no copyleft obligation.
+This project is licensed under the [MIT License](LICENSE). Colophon is an independent program that communicates with book servers over their network APIs; it is not a derivative work of Booklore or Edda.
+

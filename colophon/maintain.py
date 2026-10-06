@@ -1,14 +1,8 @@
-"""Daily maintenance run — backfill + resolve in one process, with a summary.
+"""Daily maintenance run: execute backfill, resolve, and series audits in one pass.
 
-Runs the two write phases the timer fires nightly, each guarded so a failure in
-one does not skip the other, then composes a tight summary (counts + what changed
-+ standing manual items + a one-line health verdict). The CLI emails it — always,
-including on an aborted run — so the summary doubles as a heartbeat. The process
-still exits non-zero when a phase failed, so the systemd unit is marked failed and
-the next timer fire retries.
-
-This module never raises for a phase or precondition failure: it captures the
-failure into the result so the caller can always render + send a report.
+Runs all maintenance phases with error isolation so a failure in one phase does
+not prevent subsequent phases from executing. Generates a summary report of
+applied changes and manual review items.
 """
 import os
 import shlex

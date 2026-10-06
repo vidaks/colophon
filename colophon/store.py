@@ -1,8 +1,7 @@
-"""SQLite changelog — the only recovery store (per plan 20).
+"""SQLite storage for change logging, rollback recovery, and application state.
 
-Records every heal (book, before, after, target identity, run, ok/error). This is
-what powers attribution + batch revert; there is no separate per-field snapshot
-mechanism by design.
+Records every metadata update with before-and-after snapshots, target identities,
+and run IDs to enable inspection and batch rollbacks.
 """
 import json
 import os

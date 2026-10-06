@@ -1,17 +1,14 @@
-"""Acquisition-side verification — is a grabbed file the requested work?
+"""Ebook verification: check whether a downloaded file matches a requested book.
 
-Read-only, no writes, no grimmory DB. Given a requested identity (a Hardcover
-work id — *primary*; or title/author — *degraded fallback*) and a downloaded book
-file, decide match / mismatch / unverifiable at **work** granularity. Reuses
-`epub.inspect` + `hardcover` + `matcher`; never originates an identifier.
+Read-only, standard library only, with no direct server database access.
+Given a requested book identity (Hardcover work ID, or title and author) and a
+downloaded book file, determines whether the file is a match, a mismatch, or
+unverifiable.
 
-This is the comparator the acquisition gate (plan 22) calls per grab. The gate
-acts on the returned verdict (promote / hold) — never on a process exit code.
-
-Deterministic happy path (no LLM): the file's embedded OPF ISBN resolves to a
-Hardcover book; compare its work to the requested work (id, via the shared
-canonical). A file with no resolvable ISBN is held as `unverifiable` — the
-title/colophon LLM adjudication is a later increment, not a guess.
+Deterministic matching path: the file's embedded OPF ISBN is resolved to a Hardcover
+book and compared against the requested work. Files without a resolvable ISBN fall
+back to language model comparison using extracted title, author, and copyright text.
+Matches below confidence thresholds are marked unverifiable.
 """
 from . import epub, hardcover, matcher
 

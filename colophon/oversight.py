@@ -1,20 +1,15 @@
-"""Plan 20 Phase 4b — weekly oversight (changelog-only; no external calls).
+"""Weekly changelog oversight and health reporting (local only, no external API calls).
 
-Reviews the heal changelog for a window and emits a verdict. Per the advisor's
-reshaping: NO Hardcover re-verify (flaky oracle + it would re-litigate the
-set-once locks, against plan 20's convergence principle) and NO auto-pause (a
-false-positive that silently stops all healing is worse than the bounded daily
-sweep, which is already circuit-broken + reversible). So: detect + surface
-loudly; acting stays human. Email is sent ONLY when flagged (DRIFT/REVIEW), so a
-clean week is silent.
+Analyzes the metadata change history over a specified time window to evaluate health.
+Rather than querying external APIs, it inspects local changelog entries to detect
+issues and surfaces warnings for manual review. Email alerts are dispatched only when
+warnings or errors are detected.
 
-Signals (all from the changelog — cheap, deterministic):
-  oscillation   a book with a real WRITE in >1 run in the window — the genuine
-                convergence tripwire (set-once should hold)            → DRIFT
-  error rate    failed writes / total, sustained (>=THRESH with volume) → DRIFT
-  any errors    some failures, below the drift threshold                → REVIEW
-  volume        write count — INFORMATIONAL only (a legit bulk import
-                trips it); never alarms on its own
+Health signals evaluated from the changelog:
+  oscillation   repeated updates to the same book across multiple runs  -> DRIFT
+  error rate    sustained failure rate exceeding the threshold          -> DRIFT
+  any errors    isolated failures below the drift threshold             -> REVIEW
+  volume        total writes in the period (informational only)
 """
 import os
 import smtplib

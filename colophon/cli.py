@@ -1,4 +1,4 @@
-"""Colophon Phase-0 CLI. Dry-run by default; --apply actually writes.
+"""Command-line interface for Colophon. Dry-run by default; --apply writes changes.
 
     python3 -m colophon.cli precheck
     python3 -m colophon.cli heal 592 --isbn 9780385263481 --hcid 427460 --slug hyperion [--apply]
@@ -135,10 +135,9 @@ def cmd_backfill(args, g, store):
 
 
 def cmd_enrich(args, g, store):
-    """Seed bare watch-imports (no Hardcover id) via a REPLACE_MISSING refresh, with
-    memory: a book that never seeds is marked stuck after N failed sweeps — dropped
-    from the sweep (the churn stops) and surfaced once in the daily digest. Dry-run
-    unless --apply."""
+    """Trigger initial metadata lookups for newly imported books without provider
+    IDs. Books that fail to match after repeated attempts are marked stuck and
+    reported for manual review. Dry-run unless --apply."""
     from . import enrich as E
     stuck_after = args.stuck_after if args.stuck_after is not None else E.STUCK_AFTER
     res = E.run_enrich(g, store, apply=args.apply, stuck_after=stuck_after)
@@ -261,9 +260,8 @@ def cmd_maintain(args, g, store):
 
 
 def cmd_verify(args, g, store):
-    """Acquisition gate: is the file at <file> the requested work? Read-only — prints a
-    JSON verdict (match/mismatch/unverifiable) and exits 0/3/4 for scripting. The gate's
-    hook shim reads the JSON, not the exit code."""
+    """Verify whether the book file at <file> matches the requested work.
+    Prints a JSON verdict (match/mismatch/unverifiable) and exits 0/3/4."""
     requested = {}
     if args.hcid:
         requested["hcid"] = args.hcid
@@ -277,59 +275,101 @@ def cmd_verify(args, g, store):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="colophon", description="autonomous library metadata healer (Phase 0)")
+    p = argparse.ArgumentParser(
+        prog="colophon",
+        description="Automated metadata management for Booklore and Edda ebook servers",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("precheck", help="assert the files-never-touched preconditions")
-    h = sub.add_parser("heal", help="heal one book (dry-run unless --apply)")
+    sub.add_parser("precheck", help="verify server settings before making changes")
+    h = sub.add_parser("heal", help="update metadata for a single book (dry-run unless --apply)")
     h.add_argument("book_id", type=int)
     h.add_argument("--isbn", required=True)
     h.add_argument("--hcid")
     h.add_argument("--slug")
-    h.add_argument("--apply", action="store_true", help="actually write (default: dry-run)")
-    lg = sub.add_parser("log", help="show recent changelog")
+    h.add_argument("--apply", action="store_true", help="write changes to the server (default: dry-run)")
+    lg = sub.add_parser("log", help="show recent metadata change history")
     lg.add_argument("-n", type=int, default=20)
-    rv = sub.add_parser("revert", help="restore a run from the changelog (dry-run unless --apply)")
+    rv = sub.add_parser("revert", help="restore prior metadata from the changelog (dry-run unless --apply)")
     rv.add_argument("run_id")
-    rv.add_argument("--apply", action="store_true")
-    bf = sub.add_parser("backfill", help="survey the library + propose heals (dry-run unless --apply)")
+    rv.add_argument("--apply", action="store_true", help="write restored metadata to the server")
+    bf = sub.add_parser("backfill", help="find and fix missing or broken ISBNs (dry-run unless --apply)")
     bf.add_argument("--limit", type=int, default=20)
-    bf.add_argument("--apply", action="store_true")
-    en = sub.add_parser("enrich", help="seed bare watch-imports (no hcid) + remember the unresolvable (dry-run unless --apply)")
-    en.add_argument("--apply", action="store_true", help="actually submit the refresh (default: dry-run)")
-    en.add_argument("--stuck-after", type=int, default=None,
-                    help="mark a book stuck after N failed sweeps (default: COLOPHON_ENRICH_STUCK_AFTER or 6)")
-    au = sub.add_parser("audit", help="read-only library audit + report (writes nothing)")
+    bf.add_argument("--apply", action="store_true", help="write changes to the server")
+    en = sub.add_parser(
+        "enrich",
+        help="request initial metadata for books without provider IDs (dry-run unless --apply)",
+    )
+    en.add_argument("--apply", action="store_true", help="submit metadata refresh to the server")
+    en.add_argument(
+        "--stuck-after",
+        type=int,
+        default=None,
+        help="mark a book stuck after N failed attempts (default: COLOPHON_ENRICH_STUCK_AFTER or 6)",
+    )
+    au = sub.add_parser("audit", help="audit library metadata and generate a report (read-only)")
     au.add_argument("--limit", type=int, default=None)
-    rs = sub.add_parser("resolve", help="Haiku-resolve mis-seeds (propose-only unless --apply)")
-    rs.add_argument("--book", type=int, nargs="*", help="specific book ids (default: all flagged mis-seeds)")
+    rs = sub.add_parser(
+        "resolve",
+        help="match misidentified books using Hardcover and language model adjudication (dry-run unless --apply)",
+    )
+    rs.add_argument("--book", type=int, nargs="*", help="specific book IDs to check (default: all flagged books)")
     rs.add_argument("--limit", type=int, default=None)
-    rs.add_argument("--apply", action="store_true", help="auto-apply re-seeds at conf >= --min-conf")
-    rs.add_argument("--min-conf", type=float, default=0.9)
-    rs.add_argument("--force", action="store_true", help="re-query books on the cached-unresolvable skip-list")
-    rs.add_argument("--clear-skips", action="store_true", help="forget all cached-unresolvable entries, then exit")
-    sn = sub.add_parser("series-audit", help="Phase 3 — series numbering + grouping audit (read-only unless --apply)")
+    rs.add_argument(
+        "--apply",
+        action="store_true",
+        help="apply updates when match confidence is at or above --min-conf",
+    )
+    rs.add_argument("--min-conf", type=float, default=0.9, help="minimum match confidence required to apply changes")
+    rs.add_argument("--force", action="store_true", help="retry books on the unresolvable skip list")
+    rs.add_argument("--clear-skips", action="store_true", help="clear all unresolvable skip list entries and exit")
+    sn = sub.add_parser(
+        "series-audit",
+        help="audit series names and volume numbers against Hardcover (read-only unless --apply)",
+    )
     sn.add_argument("--limit", type=int, default=None)
-    sn.add_argument("--apply", action="store_true",
-                    help="heal clean number-mismatch / number-missing / series-name-missing (reuses the heal path)")
-    sn.add_argument("--force", action="store_true",
-                    help="ignore the verdict cache — re-query Hardcover for every book")
-    ov = sub.add_parser("oversight", help="Phase 4b — weekly changelog oversight + verdict (emails only if flagged)")
-    ov.add_argument("--days", type=int, default=7)
-    ov.add_argument("--email", action="store_true", help="email the digest only when flagged (DRIFT/REVIEW)")
-    mt = sub.add_parser("maintain", help="nightly sweep: backfill + resolve in one run, with a summary (dry-run unless --apply)")
-    mt.add_argument("--limit", type=int, default=20, help="max books for the backfill survey")
-    mt.add_argument("--min-conf", type=float, default=0.9, help="auto-apply gate for resolve re-seeds")
-    mt.add_argument("--apply", action="store_true", help="actually write (default: dry-run)")
-    mt.add_argument("--force", action="store_true", help="re-query cached-unresolvable mis-seeds this run")
-    mt.add_argument("--email", action="store_true", help="always email the summary (a daily heartbeat)")
-    mt.add_argument("--notify", action="store_true",
-                    help="push the summary via COLOPHON_NOTIFY_CMD only on a noteworthy run "
-                         "(something changed / errored / a new stuck book) — quiet otherwise")
-    ve = sub.add_parser("verify", help="acquisition gate: is a downloaded file the requested work? (read-only)")
-    ve.add_argument("file", help="path to the downloaded book file")
-    ve.add_argument("--hcid", help="requested Hardcover work id (primary anchor)")
-    ve.add_argument("--title", help="requested title (degraded fallback when no --hcid)")
-    ve.add_argument("--author", help="requested author(s), used with --title")
+    sn.add_argument(
+        "--apply",
+        action="store_true",
+        help="correct volume numbers and missing series assignments",
+    )
+    sn.add_argument(
+        "--force",
+        action="store_true",
+        help="ignore cached verdicts and re-query Hardcover for every book",
+    )
+    ov = sub.add_parser(
+        "oversight",
+        help="review changelog entries for repeated updates or errors",
+    )
+    ov.add_argument("--days", type=int, default=7, help="number of days of changelog history to inspect")
+    ov.add_argument("--email", action="store_true", help="send email notification if warnings or errors are found")
+    mt = sub.add_parser(
+        "maintain",
+        help="run backfill, resolve, and series audits in one pass (dry-run unless --apply)",
+    )
+    mt.add_argument("--limit", type=int, default=20, help="maximum books to survey during backfill")
+    mt.add_argument(
+        "--min-conf",
+        type=float,
+        default=0.9,
+        help="minimum confidence threshold to apply resolution matches",
+    )
+    mt.add_argument("--apply", action="store_true", help="write changes to the server")
+    mt.add_argument("--force", action="store_true", help="retry previously unresolvable books this run")
+    mt.add_argument("--email", action="store_true", help="send daily summary report via email")
+    mt.add_argument(
+        "--notify",
+        action="store_true",
+        help="send summary via COLOPHON_NOTIFY_CMD only when changes or errors occur",
+    )
+    ve = sub.add_parser(
+        "verify",
+        help="verify whether a downloaded ebook file matches a requested book (read-only)",
+    )
+    ve.add_argument("file", help="path to the downloaded ebook file")
+    ve.add_argument("--hcid", help="requested Hardcover work ID")
+    ve.add_argument("--title", help="requested title (used when --hcid is not available)")
+    ve.add_argument("--author", help="requested author, used with --title")
     args = p.parse_args(argv)
 
     # One registry: (handler, what it needs). Build only what the command needs —

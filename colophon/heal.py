@@ -1,8 +1,8 @@
-"""Heal orchestration: precondition gate, dry-run, changelog, revert.
+"""Metadata update orchestration: safety checks, dry-run previews, changelog, and rollback.
 
-heal_book = the validated recipe: PUT correct ISBN + locks (via the API) → refresh
-(REPLACE_ALL, refreshCovers) → grimmory fills the rest from the locked ISBN. Every
-write is recorded; revert replays the changelog's before-state through the API.
+`heal_book`: writes the canonical ISBN and provider IDs via the REST API, locks those
+fields, and requests a metadata refresh. The server populates remaining details from
+the locked edition. Every change is logged; `revert_run` restores the previous state.
 """
 import re
 

@@ -1,103 +1,44 @@
 # Changelog
 
-All notable changes to this project are documented here. The format is based on
+All notable changes to this project are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
 ### Added
-- **`enrich` — seed bare imports + remember the unresolvable.** Watch-imports arrive with
-  no provider id and the server never auto-enriches them, so a frequent sweep submits a
-  `REPLACE_MISSING` refresh for the no-hcid books. New `colophon/enrich.py` + the
-  `colophon enrich` subcommand (dry-run unless `--apply`, precondition-gated). The sweep now
-  has **memory** (new `store.enrich_state` table): a book that never seeds is marked *stuck*
-  after `COLOPHON_ENRICH_STUCK_AFTER` failed sweeps (default 6), dropped from the sweep — so
-  it stops being re-poked every cycle — and surfaced **once** in the `maintain` digest with a
-  UI deep-link (`COLOPHON_BOOKSTORE_URL`, route `/book/<id>`) for the human to delete or keep
-  (silence = keep). `maintain` marks a book reported only after a successful email on an
-  `--apply` run. Replaces the memory-less external enrich loop that re-refreshed the same
-  unmatchable books indefinitely.
-- **EPUB inspection for low-confidence mis-seeds** — when `resolve` lands below the
-  confidence gate (or finds no match), it now inspects the book's own EPUB and
-  re-adjudicates with two extra signals: the OPF `dc:identifier` ISBN (a real ISBN that
-  resolves to a same-author Hardcover book heals deterministically, no LLM —
-  `source=epub-opf`), and the colophon / copyright page text folded into the Haiku prompt
-  (`source=epub-colophon`). Only below-threshold books pay for the file I/O. Gated on the
-  new `COLOPHON_BOOKS_ROOT` (the host path the library mounts from); unset ⇒ feature off.
-  New module `colophon/epub.py` (stdlib-only) plus `hardcover.book_by_isbn` and
-  `grimmory.epub_path` helpers.
-- **Acquisition-side `verify`** — a read-only `verify(requested, file)` (new module
-  `colophon/verify.py`; CLI `colophon verify <file> --hcid <id>` / `--title`) answering
-  *is this downloaded file the requested work?* at work granularity, for the
-  identifier-verified acquisition gate (plan 22). Deterministic path: the file's embedded
-  OPF ISBN → Hardcover work, compared to the requested work via the shared `canonical_id`.
-  No resolvable ISBN: the file is identified through the resolver's adjudicator (search by
-  the file's own title/author, fold in its colophon text — the LLM only ever selects a real
-  candidate) and that work is compared to the requested one; below `_LLM_MIN` (0.8)
-  confidence the file is held as `unverifiable`. Reuses `epub` + `hardcover` + `matcher` +
-  `resolver`; no writes, no grimmory DB at runtime. Exits 0/3/4 (match/mismatch/unverifiable).
-  `epub.inspect` now also returns `opf_author` (dc:creator).
+- **Initial metadata enrichment with tracking:** Added the `enrich` command to request initial metadata lookups for newly imported books lacking a provider ID. Failed attempts are recorded in `store.enrich_state`. Books that repeatedly fail to match are marked as stuck and listed once in the daily summary report for manual review.
+- **EPUB file inspection for low-confidence matches:** When online title search confidence falls below threshold, `resolve` can inspect local EPUB files to read OPF metadata identifiers and colophon copyright page text, improving match accuracy. Enabled by setting `COLOPHON_BOOKS_ROOT`.
+- **Ebook verification command:** Added `verify` (`colophon/verify.py`), a read-only tool that verifies whether a downloaded ebook file matches a requested title or Hardcover identifier. Returns match, mismatch, or unverifiable status.
 
 ### Changed
-- **CI now runs the test suite.** The workflow compiled and linted but never ran the
-  69-test (network-free) suite, despite the docs stating it gates CI; added the
-  `unittest discover` step across Python 3.9–3.12.
-- **`COLOPHON_DB` and `COLOPHON_REPORTS` are now honored.** Both were documented in the
-  README and `.env.example` but ignored — the changelog DB and reports always landed at
-  repo-relative paths. They now override those defaults (unset ⇒ unchanged behavior). The
-  five duplicated report-directory blocks in the CLI collapsed into one helper.
+- **Automated test execution in CI:** Added the `unittest` test suite step to GitHub Actions workflows across Python 3.9 through 3.12.
+- **Storage path configuration:** Corrected handling of `COLOPHON_DB` and `COLOPHON_REPORTS` environment variables so configured paths override default locations. Consolidated report directory creation into a single helper.
 
 ### Fixed
-- **Store no longer leaks SQLite connections.** `_conn()` used the bare `sqlite3`
-  context manager, which commits but never closes — an fd leak and a `ResourceWarning`
-  storm in the long-running `maintain` process. It now commits *and* closes.
-- **Token-mint failures surface cleanly.** A bad `X-Edda-Proxy-Auth` secret or an
-  unreachable server raised a raw `urllib` error past the CLI's handler; it is now a
-  `GrimmoryError` with the endpoint and cause.
-- **Corrected the dedup docs.** The README and CHANGELOG described "collapses duplicate
-  records / moves the file onto the keeper" — a feature that was never built. The audit
-  *identifies* duplicate groups and suggests a keeper; no automated dedup command exists
-  (Colophon never deletes or merges records).
+- **Database connection management:** Fixed SQLite connection handling in `store.py` to close connections properly after commits, preventing open file descriptor leaks.
+- **Authentication error handling:** Improved error messages for authentication and proxy handshake failures with the server API.
+- **Deduplication documentation:** Corrected documentation in the README and changelog to clarify that Colophon only audits and reports duplicate books; it does not delete or merge records automatically.
 
 ## [0.2.0] — 2026-06-04
 
 ### Added
-- **`maintain` command** — runs backfill + resolve in a single process (each phase
-  guarded so one failing doesn't skip the other), writes a one-page summary, and with
-  `--email` always sends it as a daily heartbeat — including on an aborted run. Exits
-  non-zero on a phase failure (so a supervising timer is marked failed and retries); an
-  SMTP failure does not change the exit code.
-- **Resolve skip-list** — mis-seeds that resolve to no-match or a below-threshold match
-  are remembered (`resolve_skip` table) and not re-queried on later runs, cutting the
-  repeated Hardcover + LLM calls for permanently-unresolvable books. The skip key is the
-  normalized title+author, so a book is re-queried automatically once its metadata
-  changes. `resolve --force` re-checks everything; `resolve --clear-skips` forgets the
-  list; `COLOPHON_RESOLVE_RETRY_DAYS` (default `0` = never) sets an optional re-check TTL.
+- **Consolidated maintenance command:** Added `maintain` to run backfill and resolve passes together with unified summary reporting and optional email dispatch.
+- **Skip list for unresolvable books:** Books that fail to match online are recorded in a skip list to avoid repeated queries on subsequent runs. Entries refresh automatically if book titles or authors change, or when using `--force`.
 
 ### Changed
-- `resolve` reports now show the cached-unresolvable set, surfacing standing
-  below-threshold matches with a one-line manual-apply command.
+- Summary reports now display cached unresolvable entries alongside manual command suggestions.
 
 ## [0.1.0] — 2026-06-03
 
-Initial public release.
-
 ### Added
-- **Backfill** — heal books with a correct provider id but a broken/missing ISBN by
-  setting the canonical ISBN + locking + refreshing.
-- **Resolve** — LLM-adjudicated re-identification of mis-seeded books over validated
-  provider candidates (Claude Haiku via the Anthropic API or the `claude` CLI); auto-applies
-  only above a confidence threshold.
-- **Series audit** — compare series numbers against the provider's authoritative position
-  and heal genuine mismatches (read-only by default).
-- **Dedup (audit-only)** — the audit groups duplicate records and suggests a keeper; no
-  automated collapse (Colophon never deletes or merges records).
-- **Oversight** — weekly changelog review (oscillation + error-rate verdict) that emails
-  only when flagged.
-- Precondition gate (files never touched), SQLite changelog with `revert`, dry-run default,
-  per-run limits, and a circuit-breaker.
-- Standard-library-only; configurable entirely via environment variables.
+- Initial public release.
+- **Backfill:** Updates books with valid provider IDs but missing ISBNs, locking the identity and refreshing metadata.
+- **Resolve:** Automated identification of misidentified books using Hardcover search and language model adjudication.
+- **Series audit:** Compares series titles and volume numbers against Hardcover data and updates discrepancies.
+- **Duplicate audit:** Scans for duplicate book entries and recommends preferred copies based on file size and import date.
+- **Oversight:** Weekly changelog analysis reporting repeated updates or elevated error rates.
+- Reversible SQLite change logging, dry-run mode by default, and safety checks verifying server file settings.
 
 [Unreleased]: https://github.com/vidaks/colophon/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/vidaks/colophon/releases/tag/v0.2.0

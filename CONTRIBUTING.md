@@ -1,51 +1,43 @@
 # Contributing
 
-Thanks for your interest. This is a small, personal project maintained on a
-**best-effort** basis — issues and PRs are welcome, but response times vary and not every
-change will fit the scope.
+Thank you for your interest in contributing to Colophon.
 
-## Ground rules
+## Ground Rules
 
-- **Open an issue first** for anything non-trivial, so we can agree on the approach before
-  you write code.
-- Keep the **standard-library-only, zero-dependency** constraint. A new runtime dependency
-  needs a strong justification.
-- Respect the **safety model** (see the README): dry-run by default, files never touched,
-  the LLM only adjudicates over validated candidates, every write logged. PRs that weaken
-  these need to make the case explicitly.
+- Open an issue before starting work on non-trivial changes so we can discuss the approach.
+- Maintain the zero-dependency constraint. Colophon relies strictly on the Python standard library; new runtime dependencies require strong justification.
+- Respect the safety invariants: dry-run by default, never modify book files on disk, constrain LLM choices to verified candidates, and record every update to the changelog.
+- Keep pull requests focused on a single change.
 
-## Dev setup
+## Development Setup
 
-No build step, no dependencies:
+Colophon requires no build step and installs no third-party runtime dependencies:
 
 ```bash
-git clone https://github.com/vidaks/colophon && cd colophon
-cp .env.example .env          # fill in for live runs
-python -m colophon.cli --help
+git clone https://github.com/vidaks/colophon
+cd colophon
+cp .env.example .env
+python3 -m colophon.cli --help
 ```
 
-Run against your own server; **dry-run (no `--apply`) is safe** and is how you should
-develop and review changes — the audit/propose output *is* the test.
+Always test against your own server in dry-run mode (without `--apply`) to preview proposals safely.
 
-## Style & checks
+## Code Style and Verification
 
-- Follow the surrounding style (PEP 8, 4-space indent, descriptive names, comments for the
-  *why*).
-- CI runs `ruff` (critical-error rules) and a compile check across Python 3.9–3.12. Before
-  opening a PR:
+- Follow PEP 8 guidelines: 4-space indentation, descriptive naming, and comments explaining why decisions were made.
+- Run tests and static checks before opening a pull request:
 
   ```bash
-  python -m compileall colophon
-  ruff check .        # optional locally; CI runs it
+  python3 -m compileall colophon
+  ruff check .
+  python3 -m unittest discover -s tests -v
   ```
 
-- Keep PRs focused; one concern per PR. Explain user-facing or safety-relevant changes in
-  the description, and update the README / `CHANGELOG.md` when behavior changes.
+- Update documentation and `CHANGELOG.md` when introducing user-facing changes.
 
-## Reporting bugs & security
+## Reporting Issues
 
-- Bugs / features: use the issue templates.
-- Security issues: **do not** open a public issue — see [SECURITY.md](SECURITY.md).
+- Bug reports and feature suggestions: open an issue on GitHub.
+- Security concerns: report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
 
-By contributing, you agree your contributions are licensed under the project's
-[MIT License](LICENSE).
+Contributions are licensed under the [MIT License](LICENSE).

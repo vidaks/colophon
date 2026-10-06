@@ -1,16 +1,14 @@
-"""Library-wide audit — READ-ONLY. Writes nothing to grimmory.
+"""Library-wide metadata audit (read-only; writes nothing to the server).
 
-Catalogs every book and produces a report so we can see the true scope before
-pointing any destructive logic at it:
-  - mis-seeds      hcid title disagrees with the book (likely wrong identity)
-  - sets/omnibus   hcid looks like a collection (needs the keep-latest policy)
-  - low-confidence title matches but the hcid is obscure / a non-canonical edition
-  - heal-isbn      identity right, ISBN broken (the auto-heal band)
-  - no-hcid        unidentified (needs title/author resolution)
-  - duplicates     groups of the same book (for the dedup/keep-latest stage)
+Catalogs books in the library and produces a summary report:
+  - mis-seeds: provider title disagrees with the local book title
+  - sets/omnibus: collections or boxed sets
+  - low-confidence: matching title on an obscure or non-canonical edition
+  - heal-isbn: valid identity with missing or broken ISBN
+  - no-hcid: unidentified books lacking a provider ID
+  - duplicates: duplicate copies of the same book
 
-Per-book Hardcover lookups are by id (indexed/cheap), cached in-process, rate-limited,
-and tolerant of provider 403s (broad search is restricted — see plan 20).
+Hardcover queries are cached in memory and rate-limited.
 """
 import re
 import time

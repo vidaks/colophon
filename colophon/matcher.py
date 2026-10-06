@@ -1,19 +1,18 @@
-"""Deterministic matcher — produce a heal proposal for a book.
+"""Deterministic matcher: produce metadata update proposals for books.
 
-Phase 1a (low-risk, high-volume): a book that already carries a Hardcover id whose
-title matches → fetch the canonical ISBN and propose healing when the stored ISBN
-is missing/malformed. Sets/omnibuses and title-mismatches (possible mis-seeds) are
-flagged for review, never auto-healed — that's Phase 1b (title/author resolution +
-Haiku tiebreaker).
+When a book already carries a Hardcover ID and the local title matches the provider,
+this module retrieves the canonical ISBN and proposes an update if the stored ISBN
+is missing or malformed. Collections, boxed sets, and title mismatches are flagged
+for review rather than updated automatically.
 
 Proposal actions:
-  heal            — set canonical ISBN (+id/slug) and refresh   [auto-eligible]
-  ok              — already canonical                            [no-op]
-  ok-altedition   — valid but non-canonical edition; leave it    [no-op]
-  skip            — no canonical ISBN available                  [no-op]
-  review-set      — looks like a set/omnibus                     [human/Phase 1b]
-  review-misseed  — hcid title disagrees with the book           [human/Phase 1b]
-  review          — no hcid (needs title/author resolution)      [Phase 1b]
+  heal            - set canonical ISBN and provider IDs, then refresh
+  ok              - already matches canonical edition
+  ok-altedition   - valid alternative edition; left untouched
+  skip            - no canonical ISBN available from provider
+  review-set      - collection or boxed set requiring review
+  review-misseed  - local title disagrees with provider title
+  review          - no provider ID (requires title and author resolution)
 """
 import re
 
@@ -79,7 +78,7 @@ def propose(snap):
     hcid = (snap.get("hardcover_book_id") or "").strip()
     cur = (snap.get("isbn_13") or "").strip()
     if not hcid:
-        out["reason"] = "no hardcover id (needs title/author resolution — Phase 1b)"
+        out["reason"] = "no hardcover id (requires title and author resolution)"
         return out
     try:
         cand = hardcover.book_by_id(hcid)
