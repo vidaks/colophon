@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-06
+
 ### Added
 - **Initial metadata enrichment with tracking:** Added the `enrich` command to request initial metadata lookups for newly imported books lacking a provider ID. Failed attempts are recorded in `store.enrich_state`. Books that repeatedly fail to match are marked as stuck and listed once in the daily summary report for manual review.
 - **EPUB file inspection for low-confidence matches:** When online title search confidence falls below threshold, `resolve` can inspect local EPUB files to read OPF metadata identifiers and colophon copyright page text, improving match accuracy. Enabled by setting `COLOPHON_BOOKS_ROOT`.
@@ -40,6 +42,7 @@ All notable changes to this project are documented in this file. The format is b
 - **Oversight:** Weekly changelog analysis reporting repeated updates or elevated error rates.
 - Reversible SQLite change logging, dry-run mode by default, and safety checks verifying server file settings.
 
-[Unreleased]: https://github.com/vidaks/colophon/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/vidaks/colophon/releases/tag/v0.2.0
+[Unreleased]: https://github.com/vidaks/colophon/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/vidaks/colophon/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/vidaks/colophon/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/vidaks/colophon/releases/tag/v0.1.0
